@@ -39,7 +39,7 @@ source_files+=" ${source_folder}/redsim/rs_entry.c"
 # -- Clean build
 mkdir -p $build_folder
 
-compiler_exec+="clang"
+compiler_exec+="mpicc"
 define_flags+=" -D_GNU_SOURCE"
 
 if [[ -n ${release-} ]]; then

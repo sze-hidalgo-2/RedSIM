@@ -165,20 +165,17 @@
 #define asan_poison_region(address, size)   (void)(address), (void)(size)
 #define asan_unpoison_region(address, size) (void)(address), (void)(size)
 
-#if COMPILER_CLANG
-# if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
+#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
+  void __asan_poison_memory_region    (void const volatile *addr, __SIZE_TYPE__ size);
+  void __asan_unpoison_memory_region  (void const volatile *addr, __SIZE_TYPE__ size);
 
-    void __asan_poison_memory_region    (void const volatile *addr, __SIZE_TYPE__ size);
-    void __asan_unpoison_memory_region  (void const volatile *addr, __SIZE_TYPE__ size);
+# undef ASAN_ENABLED
+# undef asan_poison_region
+# undef asan_unpoison_region
+# define ASAN_ENABLED 1
 
-#   undef ASAN_ENABLED
-#   undef asan_poison_region
-#   undef asan_unpoison_region
-#   define ASAN_ENABLED 1
-
-#   define asan_poison_region(address, size)   __asan_poison_memory_region(address, size)
-#   define asan_unpoison_region(address, size) __asan_unpoison_memory_region(address, size)
-# endif
+# define asan_poison_region(address, size)   __asan_poison_memory_region(address, size)
+# define asan_unpoison_region(address, size) __asan_unpoison_memory_region(address, size)
 #endif
 
 // ------------------------------------------------------------
