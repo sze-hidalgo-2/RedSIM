@@ -165,6 +165,10 @@
 #define asan_poison_region(address, size)   (void)(address), (void)(size)
 #define asan_unpoison_region(address, size) (void)(address), (void)(size)
 
+#ifndef __has_feature
+# define __has_feature(x) 0
+#endif
+
 #if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
   void __asan_poison_memory_region    (void const volatile *addr, __SIZE_TYPE__ size);
   void __asan_unpoison_memory_region  (void const volatile *addr, __SIZE_TYPE__ size);
