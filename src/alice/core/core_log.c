@@ -95,7 +95,7 @@ function void logger_format_entry_minimal(Logger_Entry *entry, U08 *entry_buffer
   Assert(buffer_at <= Logger_Max_Entry_Length, "logger buffer overflow");
 
   if (entry->type == Logger_Entry_Zone_Start) {
-   // stbsp_snprintf((char *)entry_buffer + buffer_at, Logger_Max_Entry_Length - buffer_at, "# %s\n", entry->message);
+   stbsp_snprintf((char *)entry_buffer + buffer_at, Logger_Max_Entry_Length - buffer_at, "# %s\n", entry->message);
 
   } else if (entry->type == Logger_Entry_Zone_End) {
     entry_buffer[0] = 0;
@@ -203,10 +203,9 @@ function void log_sys_context(void) {
 function void log_sys_numa_layout(void) {
   SYS_NUMA_Layout *numa = sys_numa_layout();
 
-  Log_Zone_Scope("NUMA Layout") {
-    log_info("Node Count: %llu", numa->nodes_len);
+  Log_Zone_Scope("NUMA Layout - Nodes: %llu", numa->nodes_len) {
     for Iter_Index(node_it, numa->nodes_len) {
-      Log_Zone_Scope("Node-ID: %llu", node_it) {
+      Log_Zone_Scope("Node-ID: %llu - CPU Count: %llu", node_it, numa->nodes_dat[node_it].cpus_len) {
         for Iter_Index(cpu_it, numa->nodes_dat[node_it].cpus_len) {
           log_info("CPU-ID %llu", numa->nodes_dat[node_it].cpus_dat[cpu_it]);
         }
