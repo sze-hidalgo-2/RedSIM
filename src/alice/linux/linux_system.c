@@ -11,6 +11,9 @@
 #include <pthread.h>
 #include <numa.h>
 
+#include <x86intrin.h>
+#include <immintrin.h>
+
 #include <linux/perf_event.h>
 #include <linux/io_uring.h>
 
@@ -259,7 +262,7 @@ link_function void sys_file_unmap(SYS_File_Map *map) {
 }
 
 link_function SYS_Thread sys_thread_launch(SYS_Thread_Entry_Point *entry_point, void *user_data) {
-  pthread_t thread_handle = { };
+  pthread_t thread_handle = 0;
   pthread_create(&thread_handle, 0, entry_point, user_data);
 
   Linux_Handle_Node *linux_handle = linux_handle_allocate();

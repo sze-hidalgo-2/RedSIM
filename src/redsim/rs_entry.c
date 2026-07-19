@@ -1,6 +1,8 @@
 #include "alice/core/core_build.h"
 #include "alice/core/core_build.c"
 
+#include "alice/linux/linux_system.c"
+
 #include "ugrid/ug_build.h"
 #include "ugrid/ug_build.c"
 
@@ -13,7 +15,6 @@
 #include "fluid_format/flf_build.h"
 #include "fluid_format/flf_build.c"
 
-#include "linux/linux_system.c"
 
 function void group_entry(void *user_data) {
   profiler_begin_function();

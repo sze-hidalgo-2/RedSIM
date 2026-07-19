@@ -72,15 +72,19 @@ else
 fi
 
 if [[ -n ${fast_math-} ]]; then
+echo "fast_math: yes"
 compiler_flags+=" -ffast-math"
 compiler_flags+=" -Wno-nan-infinity-disabled"
+else
+  echo "fast_math: no"
 fi
 
 compiler_flags+=" -march=native"
 compiler_flags+=" -std=c99"
-compiler_flags+=" -Wall"
+# compiler_flags+=" -Wall"
 
 linker_flags+=" -lnuma"
+linker_flags+=" -lpthread"
 linker_flags+=" -o redsim_cpu"
 
 # ------------------------------------------------------------

@@ -150,19 +150,19 @@ function U64 cstring_len(char *cstring) {
 }
 
 function F64 f64_from_str08(Str08 string) {
-  ffc_outcome outcome = { };
+  ffc_outcome outcome = 0;
   F64 result = ffc_parse_double_simple(string.len, (char *)string.txt, &outcome);
   return result;
 }
 
 function I64 i64_from_str08(Str08 string) {
-  ffc_outcome outcome = { };
+  ffc_outcome outcome = 0;
   I64 result = ffc_parse_i64_simple(string.len, (char *)string.txt, 10, &outcome);
   return result;
 }
 
 function U64 u64_from_str08(Str08 string) {
-  ffc_outcome outcome = { };
+  ffc_outcome outcome = 0;
   U64 result = ffc_parse_u64_simple(string.len, (char *)string.txt, 10, &outcome);
   return result;
 }
