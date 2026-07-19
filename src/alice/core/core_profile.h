@@ -3,7 +3,7 @@
 
 #if BUILD_PROFILE
 
-  function              void profiler_startup             (void);
+  function              void profiler_startup             (char *trace_file);
   function              void profiler_shutdown            (void);
   function              void profiler_init_for_thread     (void);
   function              void profiler_quit_for_thread     (void);
@@ -17,7 +17,7 @@
 
 #else
 
-  force_inline function void profiler_startup             (void)                           { }
+  force_inline function void profiler_startup             (char *trace_file)               { }
   force_inline function void profiler_shutdown            (void)                           { }
   force_inline function void profiler_init_for_thread     (void)                           { }
   force_inline function void profiler_quit_for_thread     (void)                           { }

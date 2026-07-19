@@ -50,9 +50,11 @@ if [[ -n ${release-} ]]; then
 else
   echo "release: no"
   compiler_flags+=" -O0"
-  compiler_flags+=" -fsanitize=address"
-  compiler_flags+=" -fsanitize-address-use-after-scope"
-  compiler_flags+=" -fno-omit-frame-pointer"
+
+  # NOTE(cmat): Doesn't work with OpenMPI :-(
+  # compiler_flags+=" -fsanitize=address"
+  # compiler_flags+=" -fsanitize-address-use-after-scope"
+  # compiler_flags+=" -fno-omit-frame-pointer"
   define_flags+=" -DBUILD_ASSERT=1"
 fi
 

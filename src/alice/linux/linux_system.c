@@ -372,8 +372,11 @@ link_function U64 sys_performance_clock_now(void) {
 // ------------------------------------------------------------
 // #-- Linux State Initialization
 
-function void linux_state_init_context(void) {
+function void linux_state_init_context(U32 argc, U08 **argv) {
   SYS_Context *context = &Linux_State.context;
+  
+  context->command_line.argc = argc;
+  context->command_line.argv = argv;
 
 #if ARCH_X86  
   // NOTE(cmat): Get CPU name.
@@ -445,12 +448,12 @@ function void linux_state_init_numa_layout(void) {
   }
 }
 
-function void linux_state_init(void) {
+function void linux_state_init(U32 argc, U08 **argv) {
   Zero_Fill(&Linux_State);
 
   // NOTE(cmat): Necessary to intialize first for arena-use.
   // TODO(cmat): Is there a way to by-pass this? A more elegant solution?
-  linux_state_init_context();
+  linux_state_init_context(argc, argv);
 
   // NOTE(cmat): Now we can safely initialize the arena for the rest of the initializations.
   arena_init(&Linux_State.arena);
@@ -466,19 +469,19 @@ function void linux_state_init(void) {
 // #-- Linux Entry Point
 
 int main(int argc, char **argv) {
-  linux_state_init();
+  linux_state_init((U32)argc, (U08 **)argv);
 
   // NOTE(cmat): Call into user code.
   // TODO(cmat): This code should not be written for all platforms, should be centralized.
   // TODO(cmat): This is also a mess, profiler_init_for_thread is also called in thread.c, 
   // - should find a way to simplify / make this whole thing more uniform.
   thread_context_init(SYS_Barrier_None, 0, str08_lit("Main"), 0, 0);
-  profiler_startup();
-  profiler_init_for_thread();
+  // profiler_startup("spall_trace.spall");
+  // profiler_init_for_thread();
 
   sys_entry_point();
 
-  profiler_quit_for_thread();
-  profiler_shutdown();
+  // profiler_quit_for_thread();
+  // profiler_shutdown();
   thread_context_destroy();
 }

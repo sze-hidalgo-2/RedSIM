@@ -1,7 +1,8 @@
 #include "alice/core/core_build.h"
 #include "alice/core/core_build.c"
 
-#include "alice/linux/linux_system.c"
+#include "ipc/ipc_build.h"
+#include "ipc/ipc_build.c"
 
 #include "ugrid/ug_build.h"
 #include "ugrid/ug_build.c"
@@ -15,10 +16,16 @@
 #include "fluid_format/flf_build.h"
 #include "fluid_format/flf_build.c"
 
+#include "alice/linux/linux_system.c"
 
-function void group_entry(void *user_data) {
+function void redsim_group_entry(void *user_data) {
   profiler_begin_function();
+  Log_Zone_Scope("Thread Group Entered") {
+    ipc_rank_barrier();
+    log_info("Test!");
+  }
 
+#if 0
   local_storage UG_Mesh mesh = { };
   if (lane_index() == 0) {
     ug_mesh_init(&mesh);
@@ -73,26 +80,55 @@ function void group_entry(void *user_data) {
   flf_ensight_export_flow(&export, 0.f, &solver.flow);
   flf_ensight_export_end(&export);
 
+#endif
   profiler_end_function();
 }
 
-link_function void sys_entry_point(void) {
+link_function void redsim_entry_point(void) {
   profiler_begin_function();
 
-  logger_push_hook(logger_write_entry_standard_stream, logger_format_entry_detailed);
-  log_sys_context();
-  log_sys_numa_layout();
+  log_sys_context();      // NOTE(cmat): Log system information.
+  log_ipc_context();      // NOTE(cmat): Log IPC context.
+  log_sys_numa_layout();  // NOTE(cmat): Log NUMA layout.
 
-  U32           thread_count = sys_context()->cpu_logical_cores;
+  log_info("Launching thread group");
+
+  U32           thread_count = 4; // sys_context()->cpu_logical_cores;
   Thread_Group  thread_group = { };
 
-  log_info("Thread Count: %u", thread_count);
-
   thread_group_init     (&thread_group, str08_lit("Sim"), thread_count);
-  thread_group_launch   (&thread_group, group_entry, 0);
+  thread_group_launch   (&thread_group, redsim_group_entry, 0);
   thread_group_wait_all (&thread_group);
   thread_group_destroy  (&thread_group);
 
   profiler_end_function();
+}
+
+link_function void sys_entry_point(void) {
+  // NOTE(cmat): Initialize IPC communication first.
+  ipc_init();
+
+  if (ipc_rank_index() == 0) {
+    // NOTE(cmat): We only profile for rank 0.
+    // - Even though we only profile a single rank, we can still see
+    // - the bottlenecks at collective communication calls.
+    profiler_startup("spall_trace.spall");
+    profiler_init_for_thread();
+
+    // NOTE(cmat): We only generate logs for rank 0.
+    // NOTE(cmat): We log both to stdout and files.
+    logger_push_hook(logger_write_entry_standard_stream, logger_format_entry_detailed);
+  }
+
+  redsim_entry_point();
+
+  // NOTE(cmat): Stop profiling.
+  if (ipc_rank_index() == 0){ 
+    profiler_quit_for_thread();
+    profiler_shutdown();
+  }
+
+  // NOTE(cmat): Shutdown IPC.
+  ipc_shutdown();
 }
 

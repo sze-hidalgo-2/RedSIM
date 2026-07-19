@@ -70,4 +70,3 @@ function void ug_mesh_assign_ghosts       (UG_Mesh *mesh);
 function void ug_mesh_compute_cells       (UG_Mesh *mesh);
 function void ug_mesh_reorder_cells       (UG_Mesh *mesh);
 
-

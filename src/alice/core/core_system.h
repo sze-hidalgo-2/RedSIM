@@ -3,12 +3,17 @@
 
 // ------------------------------------------------------------
 // #-- System Data Structures
+typedef struct SYS_Command_Line {
+  I32   argc;
+  U08 **argv;
+} SYS_Command_Line;
 
 typedef struct SYS_Context {
-  Str08 cpu_name;
-  U64   cpu_logical_cores;
-  U64   mmu_page_bytes;
-  U64   ram_capacity_bytes;
+  Str08             cpu_name;
+  U64               cpu_logical_cores;
+  U64               mmu_page_bytes;
+  U64               ram_capacity_bytes;
+  SYS_Command_Line  command_line;
 } SYS_Context;
 
 typedef U64 SYS_CPU;
