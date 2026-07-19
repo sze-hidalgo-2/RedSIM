@@ -439,9 +439,9 @@ function void linux_state_init_numa_layout(void) {
           }
         }
       }
-
-      numa_free_cpumask(cpu_mask);
     }
+
+    numa_free_cpumask(cpu_mask);
   }
 }
 
