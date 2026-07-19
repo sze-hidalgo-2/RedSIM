@@ -86,6 +86,8 @@ link_function void sys_entry_point(void) {
   U32           thread_count = sys_context()->cpu_logical_cores;
   Thread_Group  thread_group = { };
 
+  log_info("Thread Count: %u", thread_count);
+
   thread_group_init     (&thread_group, str08_lit("Sim"), thread_count);
   thread_group_launch   (&thread_group, group_entry, 0);
   thread_group_wait_all (&thread_group);
