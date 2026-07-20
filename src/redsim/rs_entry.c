@@ -29,13 +29,20 @@ function void redsim_group_entry(void *user_data) {
   // NTOE(cmat): Once we've loaded the mesh on rank 0, distribute to other ranks and partition again
   // - on each rank for each thread group.
   if (ipc_rank_index() == 0) {
+    Arena_Temp scratch = { };
+    Scratch_Scope(&scratch, 0) {
+      // NOTE(cmat): Load mesh.
+      UG_Grid grid = { };
+      ugf_grid_init_from_su2(&grid, scratch.arena, str08_lit("cube_30M.su2"));
 
-    // NOTE(cmat): Load mesh.
-    UG_Grid grid = { };
-    ugf_grid_init_from_su2(&grid, str08_lit("cube_4M.su2"));
+      // NOTE(cmat): Partition mesh by rank count.
+      UG_Partition partition = { };
+      ug_partition_rcb(&partition, scratch.arena, &grid, ipc_rank_count());
 
-    // NOTE(cmat): Partition mesh.
-    ug_partition_rcb(&grid);
+      // NOTE(cmat): Create a sub-grid for each rank.
+    }
+
+    // NOTE(cmat): Construct grid for each partition, distribute across ranks.
   }
 
   ipc_rank_barrier();

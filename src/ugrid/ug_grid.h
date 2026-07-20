@@ -12,6 +12,12 @@ typedef struct UG_Grid_Markers {
   UG_Grid_Marker_Elems  *elems;
 } UG_Grid_Markers;
 
+typedef struct UG_Grid_Halos {
+  U64       len;
+  U32      *part;
+  U32      *cell;
+} UG_Grid_Halos;
+
 typedef struct UG_Grid_Verts {
   U64  len;
   F32 *x;
@@ -25,10 +31,9 @@ typedef struct UG_Grid_Elems {
 } UG_Grid_Elems;
 
 typedef struct UG_Grid {
-  Arena             arena;
   UG_Grid_Verts     verts;
   UG_Grid_Elems     elems;
   UG_Grid_Markers   markers;
+  UG_Grid_Halos     halos;
 } UG_Grid;
 
-function void ug_grid_init(UG_Grid *grid);

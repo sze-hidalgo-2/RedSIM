@@ -1,4 +1,4 @@
-function void ugf_su2_parse_block_NPOIN(Scan *scan, UG_Grid *ugrid) {
+function void ugf_su2_parse_block_NPOIN(Arena *arena, Scan *scan, UG_Grid *ugrid) {
   profiler_begin_function();
   scan_require(scan, str08_lit("="));
 
@@ -7,9 +7,9 @@ function void ugf_su2_parse_block_NPOIN(Scan *scan, UG_Grid *ugrid) {
 
   if (!scan_error(scan)) {
     ugrid->verts.len = point_count;
-    ugrid->verts.x   = arena_push_count(&ugrid->arena, F32, point_count);
-    ugrid->verts.y   = arena_push_count(&ugrid->arena, F32, point_count);
-    ugrid->verts.z   = arena_push_count(&ugrid->arena, F32, point_count);
+    ugrid->verts.x   = arena_push_count(arena, F32, point_count);
+    ugrid->verts.y   = arena_push_count(arena, F32, point_count);
+    ugrid->verts.z   = arena_push_count(arena, F32, point_count);
 
     for Iter_Index(it, point_count) {
       ugrid->verts.x[it] = (F32)scan_f64(scan);
@@ -24,7 +24,7 @@ function void ugf_su2_parse_block_NPOIN(Scan *scan, UG_Grid *ugrid) {
   profiler_end_function();
 }
 
-function void ugf_su2_parse_block_NELEM(Scan *scan, UG_Grid *ugrid) {
+function void ugf_su2_parse_block_NELEM(Arena *arena, Scan *scan, UG_Grid *ugrid) {
   profiler_begin_function();
   scan_require(scan, str08_lit("="));
 
@@ -33,7 +33,7 @@ function void ugf_su2_parse_block_NELEM(Scan *scan, UG_Grid *ugrid) {
 
   if (!scan_error(scan)) {
     ugrid->elems.len   = element_count;
-    ugrid->elems.verts = arena_push_count(&ugrid->arena, V4_U32, ugrid->elems.len);
+    ugrid->elems.verts = arena_push_count(arena, V4_U32, ugrid->elems.len);
 
     for Iter_Index(it, element_count) {
       U64 element_type = scan_u64(scan);
@@ -59,7 +59,7 @@ function void ugf_su2_parse_block_NELEM(Scan *scan, UG_Grid *ugrid) {
   profiler_end_function();
 }
 
-function void ugf_su2_parse_block_NMARK(Scan *scan, UG_Grid *ugrid) {
+function void ugf_su2_parse_block_NMARK(Arena *arena, Scan *scan, UG_Grid *ugrid) {
   profiler_begin_function();
   scan_require(scan, str08_lit("="));
 
@@ -68,21 +68,21 @@ function void ugf_su2_parse_block_NMARK(Scan *scan, UG_Grid *ugrid) {
 
   if (!scan_error(scan)) {
     ugrid->markers.len       = mark_count;
-    ugrid->markers.tags      = arena_push_count(&ugrid->arena, Str08,                 mark_count);
-    ugrid->markers.elems     = arena_push_count(&ugrid->arena, UG_Grid_Marker_Elems,  mark_count);
+    ugrid->markers.tags      = arena_push_count(arena, Str08,                 mark_count);
+    ugrid->markers.elems     = arena_push_count(arena, UG_Grid_Marker_Elems,  mark_count);
 
     for Iter_Index(it, mark_count) {
       scan_require(scan, str08_lit("MARKER_TAG"));
       scan_require(scan, str08_lit("="));
       Str08 tag_name          = scan_identifier(scan);
-      ugrid->markers.tags[it]  = arena_push_str08(&ugrid->arena, tag_name);
+      ugrid->markers.tags[it]  = arena_push_str08(arena, tag_name);
 
       scan_require(scan, str08_lit("MARKER_ELEMS"));
       scan_require(scan, str08_lit("="));
       U64 element_count = scan_u64(scan);
 
       ugrid->markers.elems[it].len   = element_count;
-      ugrid->markers.elems[it].verts = arena_push_count(&ugrid->arena, V3U, element_count);
+      ugrid->markers.elems[it].verts = arena_push_count(arena, V3U, element_count);
 
       for Iter_Index(it_elem, element_count) {
         U64 type = scan_u64(scan);
@@ -110,13 +110,13 @@ function void ugf_su2_parse_block_NMARK(Scan *scan, UG_Grid *ugrid) {
 }
 
 
-function void ugf_grid_init_from_su2(UG_Grid *ugrid, Str08 file_path) {
+function void ugf_grid_init_from_su2(UG_Grid *ugrid, Arena *arena, Str08 file_path) {
   profiler_begin_function();
   log_zone_start("Loading su2 file: \"%S\"", file_path);
 
   // TODO(cmat): Write this section to be multi-core.
   if (lane_index() == 0) {
-    ug_grid_init(ugrid);
+    Zero_Fill(ugrid);
 
     SYS_File file_in = { };
     SYS_File_Scope(&file_in, file_path, SYS_File_Access_Flag_Read) {
@@ -128,7 +128,7 @@ function void ugf_grid_init_from_su2(UG_Grid *ugrid, Str08 file_path) {
         log_info("SU2 file size: %$llu", file_bytes);
 
         Scratch scratch = { };
-        Scratch_Scope(&scratch, 0) {
+        Scratch_Scope(&scratch, arena) {
           Scan scan = { };
           scan_init(&scan, scratch.arena, file_str);
 
@@ -150,9 +150,9 @@ function void ugf_grid_init_from_su2(UG_Grid *ugrid, Str08 file_path) {
               Str08 block_type = scan_identifier(&scan);
 
               if (0);
-              else if (str08_match(block_type, str08_lit("NPOIN"))) { ugf_su2_parse_block_NPOIN(&scan, ugrid); }
-              else if (str08_match(block_type, str08_lit("NELEM"))) { ugf_su2_parse_block_NELEM(&scan, ugrid); }
-              else if (str08_match(block_type, str08_lit("NMARK"))) { ugf_su2_parse_block_NMARK(&scan, ugrid); }
+              else if (str08_match(block_type, str08_lit("NPOIN"))) { ugf_su2_parse_block_NPOIN(arena, &scan, ugrid); }
+              else if (str08_match(block_type, str08_lit("NELEM"))) { ugf_su2_parse_block_NELEM(arena, &scan, ugrid); }
+              else if (str08_match(block_type, str08_lit("NMARK"))) { ugf_su2_parse_block_NMARK(arena, &scan, ugrid); }
               else {
                 Str08 message = str08_format(scratch.arena, "unexpected block \"%S\"", block_type);
                 scan_error_push(&scan, message);
