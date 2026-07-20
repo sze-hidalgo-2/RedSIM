@@ -1,13 +1,3 @@
-global const U32 UG_Cell_Invalid = u32_limit_max;
-global const U08 UG_Face_Invalid = u08_limit_max;
-
-typedef struct UG_Verts {
-  U64  len;
-  F32 *x;
-  F32 *y;
-  F32 *z;
-} UG_Verts;
-
 // NOTE(cmat): We are storing face information twice, duplicated.
 // - This is done on purpose, since it allows us to write SIMD code
 // - processing each faces at once, and also gives better cache locality,
@@ -28,7 +18,7 @@ typedef struct UG_Cell_Faces_Verts {
 
 typedef struct UG_Cells {
   U64                  len;
-  V4U                 *verts;
+  // V4U                 *verts;
   V3F                 *center;
   F32                 *volume;
   UG_Cell_Faces       *faces;
@@ -42,26 +32,16 @@ typedef struct UG_Ghosts {
   U32 *marker_index;
 } UG_Ghosts;
 
-typedef struct UG_Marker_Elems {
-  U64  len;
-  V3U *verts;
-} UG_Marker_Elems;
-
-typedef struct UG_Markers {
-  U64              len;
-  Str08           *tags;
-  UG_Marker_Elems *elems;
-} UG_Markers;
-
 typedef struct UG_Mesh {
   Arena       arena;
   U64         dimension;
   Range3_F32  bounds;
 
-  UG_Verts    verts;
+  UG_Grid     grid;
+
+
   UG_Cells    cells;
   UG_Ghosts   ghosts;
-  UG_Markers  markers;
 } UG_Mesh;
 
 function void ug_mesh_init                (UG_Mesh *mesh);

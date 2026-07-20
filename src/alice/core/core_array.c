@@ -38,7 +38,6 @@ function void array_reorder(U64 array_len, U64 type_size, U08 *array_dat, U64 ke
   profiler_end_function();
 }
 
-
 // ------------------------------------------------------------
 // #-- Radix Sort
 
@@ -272,6 +271,20 @@ function void array_sort_radix_u64(U64 array_len, U64 array_stride, U64 array_of
 
   scratch_end(&scratch);
   profiler_end_function();
+}
+
+function U32 radix_key_from_f32(F32 x) {
+  U32 bits = *(U32 *)&x;
+  U32 mask = ((I32)bits >> 31) | 0x80000000;
+  U32 key  = bits ^ mask;
+  return key;
+}
+
+function F32 f32_from_radix_key(U32 radix_key) {
+  U32 mask  = ((I32)~radix_key >> 31) | 0x80000000;
+  U32 bits  = radix_key ^ mask;
+  F32 value = *(F32 *)&bits;
+  return value;
 }
 
 // ------------------------------------------------------------

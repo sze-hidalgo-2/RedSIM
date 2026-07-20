@@ -1304,3 +1304,25 @@ inline function Range3_F32 range3_f32(V3F min, V3F max) {
 inline function V3F range3_f32_len(Range3_F32 r) {
   return v3f_sub(r.max, r.min);
 }
+
+inline function F32 range3_f32_largest_axis(Range3_F32 r, U32 *axis) {
+  V3F d         = v3f_sub(r.max, r.min);
+  U32 max_index = 0;
+  F32 max_value = d.x;
+
+  if (d.y > max_value) {
+    max_index = 1;
+    max_value = d.y;
+  }
+  
+  if (d.z > max_value) {
+    max_index = 2;
+    max_value = d.z;
+  }
+
+  if (axis) {
+    *axis = max_index;
+  }
+
+  return max_value;
+}

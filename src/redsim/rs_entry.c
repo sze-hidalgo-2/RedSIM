@@ -10,77 +10,37 @@
 #include "ugrid_format/ugf_build.h"
 #include "ugrid_format/ugf_build.c"
 
+#if 0
+
 #include "fluid/fl_build.h"
 #include "fluid/fl_build.c"
 
 #include "fluid_format/flf_build.h"
 #include "fluid_format/flf_build.c"
+#endif
 
 #include "alice/linux/linux_system.c"
 
 function void redsim_group_entry(void *user_data) {
   profiler_begin_function();
-  Log_Zone_Scope("Thread Group Entered") {
-    ipc_rank_barrier();
-    log_info("Test!");
+  log_zone_start("Thread Group Entry");
+
+  // NOTE(cmat): Load mesh on rank 0 and partition it (still multithreaded, just single rank).
+  // NTOE(cmat): Once we've loaded the mesh on rank 0, distribute to other ranks and partition again
+  // - on each rank for each thread group.
+  if (ipc_rank_index() == 0) {
+
+    // NOTE(cmat): Load mesh.
+    UG_Grid grid = { };
+    ugf_grid_init_from_su2(&grid, str08_lit("cube_4M.su2"));
+
+    // NOTE(cmat): Partition mesh.
+    ug_partition_rcb(&grid);
   }
 
-#if 0
-  local_storage UG_Mesh mesh = { };
-  if (lane_index() == 0) {
-    ug_mesh_init(&mesh);
-    ugf_load_su2(&mesh, str08_lit("cube_4M.su2"));
-  }
+  ipc_rank_barrier();
 
-  lane_barrier();
-  ug_mesh_compute_cells       (&mesh);
-  ug_mesh_reorder_cells       (&mesh);
-  ug_mesh_compute_cells_faces (&mesh);
-  ug_mesh_assign_ghosts       (&mesh);
-
-  lane_barrier();
-
-  local_storage FL_Solver_Euler solver = { };
-  local_storage FL_Boundary_Map boundary = { };
-  // local_storage FL_Boundary_Farfield farfield = { };
-  if (lane_index() == 0) {
-
-#if 0
-    fl_boundary_map_init(&boundary, 3);
-
-    farfield                                = (FL_Boundary_Farfield)  { .velocity = v3f(50, 0, 0), .density = 1.225f, .pressure = 1.0e5f };
-    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary)           { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
-    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary)           { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary)           { .type = FL_Boundary_Type_Slip };
-#else
-    fl_boundary_map_init(&boundary, 6);
-    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary)           { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary)           { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary)           { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 3) = (FL_Boundary)           { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 4) = (FL_Boundary)           { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 5) = (FL_Boundary)           { .type = FL_Boundary_Type_Slip };
-#endif
-
-    fl_solver_euler_init(&solver, &boundary, &mesh);
-  }
-
-  // NOTE(cmat): Assign initial condition.
-  lane_barrier();
-
-  fl_setup_sod(&solver.flow, solver.mesh);
-  // fl_state_set_inner_from_farfield(&solver.flow, &farfield);
-
-  lane_barrier();
-  fl_solver_euler_solve(&solver);
-
-  lane_barrier();
-
-  FLF_Ensight_Export export = flf_ensight_export_start(str08_lit("sod_ensight"), &mesh);
-  flf_ensight_export_flow(&export, 0.f, &solver.flow);
-  flf_ensight_export_end(&export);
-
-#endif
+  log_zone_end();
   profiler_end_function();
 }
 
@@ -91,12 +51,12 @@ link_function void redsim_entry_point(void) {
   log_ipc_context();      // NOTE(cmat): Log IPC context.
   log_sys_numa_layout();  // NOTE(cmat): Log NUMA layout.
 
-  log_info("Launching thread group");
-
-  U32           thread_count = 4; // sys_context()->cpu_logical_cores;
+  U32           thread_count = sys_context()->cpu_logical_cores;
   Thread_Group  thread_group = { };
 
-  thread_group_init     (&thread_group, str08_lit("Sim"), thread_count);
+  log_info("Launching thread group with %u threads", thread_count);
+
+  thread_group_init     (&thread_group, str08_lit("Sim_Group"), thread_count);
   thread_group_launch   (&thread_group, redsim_group_entry, 0);
   thread_group_wait_all (&thread_group);
   thread_group_destroy  (&thread_group);

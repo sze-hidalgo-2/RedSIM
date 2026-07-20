@@ -70,12 +70,15 @@ function void thread_group_wait_all   (Thread_Group *thread_group);
 // ------------------------------------------------------------
 // #-- Wavefronts, Lanes
 
-function U32        lane_index         (void);
-function U32        lane_count         (void);
-function Range1_U64 lane_range         (U64 count);
-function void       lane_barrier       (void);
-function void       lane_broadcast_u64 (U64  *value,  U32 broadcast_lane);
-function void       lane_broadcast_ptr (void *value,  U32 broadcast_lane);
+function U32        lane_index              (void);
+function U32        lane_count              (void);
+function Range1_U64 lane_range              (U64 count);
+function void       lane_barrier            (void);
+function void       lane_broadcast_u64      (U64  *value,   U32 broadcast_lane);
+function void       lane_broadcast_ptr      (void *value,   U32 broadcast_lane);
+function void       lane_broadcast_type_ext (U64 type_size, void *type_data, U32 broadcast_lane);
+
+#define lane_broadcast_type(value_ptr_, broadcast_lane_) lane_broadcast_type_ext(sizeof(*(value_ptr_)), value_ptr_, broadcast_lane_)
 
 // ------------------------------------------------------------
 // #-- Scratch Storage

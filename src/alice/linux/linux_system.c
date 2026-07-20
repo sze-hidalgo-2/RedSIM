@@ -46,7 +46,6 @@ global struct {
   Arena             arena;
   Linux_Handle_List handle_list;
   Linux_Handle_List handle_free_list;
-
   U08               cpu_id_buffer[48];
 } Linux_State = { };
 

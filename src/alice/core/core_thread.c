@@ -136,6 +136,18 @@ function void lane_broadcast_ptr(void *value, U32 broadcast_lane) {
   lane_broadcast_u64((U64 *)value, broadcast_lane);
 }
 
+function void lane_broadcast_type_ext(U64 type_size, void *type_data, U32 broadcast_lane) {
+  U64 type_data_address = (U64)type_data;
+  if (lane_index() == broadcast_lane) { memory_copy(Thread_Context.group_storage, &type_data_address, sizeof(U64)); }
+  lane_barrier();
+  if (lane_index() != broadcast_lane) {
+    memory_copy(&type_data_address, Thread_Context.group_storage, sizeof(U64));
+    memory_copy(type_data,          (void *)type_data_address,    type_size);
+  }
+
+  lane_barrier();
+}
+
 // ------------------------------------------------------------
 // #-- Scratch Storage
 
