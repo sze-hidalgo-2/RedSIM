@@ -4,7 +4,8 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
   euler->mesh = mesh;
 
   euler->boundary = boundary;
-  Assert(boundary->map_len >= mesh->markers.len, "Boundary Map not large enough for mesh");
+  // TODO
+  // Assert(boundary->map_len >= mesh->markers.len, "Boundary Map not large enough for mesh");
 
   fl_state_init(&euler->flow,     mesh);
   fl_state_init(&euler->residual, mesh);

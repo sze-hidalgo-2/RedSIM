@@ -1,8 +1,7 @@
-- optimize memory layout for residual loop
-- Seperate grid from mesh input.
-- NUMA topology
+- Partition, go back to buckets.
+- Fix partitioning code in mesh, check offset.
+
 - Multiple thread groups, synchronization between them
 - logging to files, remove mutex from logger
-- pack / unpack state API.
 - BC lookup table
 - IC customizable function.

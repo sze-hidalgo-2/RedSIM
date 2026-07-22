@@ -5,6 +5,7 @@ typedef struct FL_State {
   F32   gas_constant;
 
   U64   inner_len;
+  U64   halo_len;
   U64   ghost_len;
 
   union {

@@ -14,6 +14,11 @@
 # define BUILD_PROFILE 0
 #endif
 
+#if !defined(BUILD_HASH)
+# error "BUILD_HASH not defined"
+# define BUILD_HASH 0
+#endif
+
 // ------------------------------------------------------------
 // #-- Codebase Markup
 
@@ -482,3 +487,7 @@ typedef struct {
 
 function Local_Time local_time_from_unix_time(U64 unix_seconds, U64 unix_microseconds);
 
+
+// ------------------------------------------------------------
+// #-- Build info
+#define Build_Hash_Str08 str08_lit(Macro_Stringize(BUILD_HASH))

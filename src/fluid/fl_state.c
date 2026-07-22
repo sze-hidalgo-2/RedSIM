@@ -2,13 +2,14 @@ function void fl_state_init(FL_State *fl, UG_Mesh *mesh) {
   Zero_Fill(fl);
   arena_init(&fl->arena);
 
-  U64  total_len   = mesh->cells.len + mesh->ghosts.len;
+  U64  total_len   = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
   F32 *total_dat   = arena_push_count(&fl->arena, F32, 5 * total_len);
 
   fl->gamma        = 1.4f;
   fl->gas_constant = 287.05f; // J / (kg * K)
 
   fl->inner_len    = mesh->cells.len;
+  fl->halo_len     = mesh->halos.len;
   fl->ghost_len    = mesh->ghosts.len;
 
   fl->rho          = total_dat + 0 * total_len;

@@ -81,6 +81,7 @@ else
   echo "fast_math: no"
 fi
 
+compiler_flags+=" -DBUILD_HASH=$(git rev-parse --short HEAD)"
 compiler_flags+=" -march=native"
 compiler_flags+=" -std=c99"
 # compiler_flags+=" -Wall"
@@ -93,6 +94,7 @@ linker_flags+=" -o redsim_cpu"
 # NOTE(cmat): Invoke compiler
 pushd build > /dev/null 2>&1
 
+echo "compiler      : ${compiler_exec}"
 echo "compiler flags: ${compiler_flags}"
 echo "linker   flags: ${linker_flags}"
 $compiler_exec $source_files $define_flags $include_folders $compiler_flags $linker_flags

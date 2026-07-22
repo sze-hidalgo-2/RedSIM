@@ -11,12 +11,12 @@
 #include "ugrid_format/ugf_build.c"
 
 #if 0
-
 #include "fluid/fl_build.h"
 #include "fluid/fl_build.c"
 
 #include "fluid_format/flf_build.h"
 #include "fluid_format/flf_build.c"
+
 #endif
 
 #include "alice/linux/linux_system.c"
@@ -28,23 +28,45 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Load mesh on rank 0 and partition it (still multithreaded, just single rank).
   // NTOE(cmat): Once we've loaded the mesh on rank 0, distribute to other ranks and partition again
   // - on each rank for each thread group.
+  UG_Mesh mesh = { };
   if (ipc_rank_index() == 0) {
     Arena_Temp scratch = { };
     Scratch_Scope(&scratch, 0) {
-      // NOTE(cmat): Load mesh.
+      // NOTE(cmat): Load grid from file.
       UG_Grid grid = { };
-      ugf_grid_init_from_su2(&grid, scratch.arena, str08_lit("cube_30M.su2"));
+      ugf_grid_init_from_su2(&grid, scratch.arena, str08_lit("cube_4M.su2"));
+
+      // NOTE(cmat): Compute mesh based on grid: adjacency + geometry.
+      UG_Mesh mesh_global = { };
+      ug_mesh_init_from_grid(&mesh_global, &grid, scratch.arena);
 
       // NOTE(cmat): Partition mesh by rank count.
       UG_Partition partition = { };
-      ug_partition_rcb(&partition, scratch.arena, &grid, ipc_rank_count());
+      ug_partition_rcb(&partition, scratch.arena, &mesh_global, ipc_rank_count());
 
-      // NOTE(cmat): Create a sub-grid for each rank.
+      // NOTE(cmat): Create sub-mesh for each rank.
+      UG_Mesh_Array mesh_local = { };
+      ug_mesh_array_from_partition(&mesh_local, &mesh_global, &partition, scratch.arena);
+
+      // NOTE(cmat): Broadcast mesh array to all ranks.
+      if (ipc_rank_count() > 1) {
+        log_info("Broading casting mesh to %u ranks", ipc_rank_count() - 1);
+        for Iter_Index(it, ipc_rank_count() - 1) {
+#if 0
+          ug_mesh_ipc_send_async(&mesh_local.dat, it + 1);
+#endif
+        }
+      }
     }
-
-    // NOTE(cmat): Construct grid for each partition, distribute across ranks.
+  } else {
+    // NOTE(cmat): Receive mesh.
+#if 0
+    IPC_Sync sync = ug_mesh_ipc_receive_async(&mesh, 0);
+    icp_wait(&sync);
+#endif
   }
 
+  // NOTE(cmat): Wait until everyone has a mesh.
   ipc_rank_barrier();
 
   log_zone_end();
@@ -54,6 +76,7 @@ function void redsim_group_entry(void *user_data) {
 link_function void redsim_entry_point(void) {
   profiler_begin_function();
 
+  log_info("RedSIM 1.0 | Build Hash: %S", Build_Hash_Str08);
   log_sys_context();      // NOTE(cmat): Log system information.
   log_ipc_context();      // NOTE(cmat): Log IPC context.
   log_sys_numa_layout();  // NOTE(cmat): Log NUMA layout.
@@ -61,7 +84,7 @@ link_function void redsim_entry_point(void) {
   U32           thread_count = sys_context()->cpu_logical_cores;
   Thread_Group  thread_group = { };
 
-  log_info("Launching thread group with %u threads", thread_count);
+  log_info("Launching global thread group with %u threads", thread_count);
 
   thread_group_init     (&thread_group, str08_lit("Sim_Group"), thread_count);
   thread_group_launch   (&thread_group, redsim_group_entry, 0);

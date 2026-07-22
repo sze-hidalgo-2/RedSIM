@@ -3,7 +3,13 @@
 // - processing each faces at once, and also gives better cache locality,
 // - since we can just fetch the data for the 4 faces all at once,
 // - instead of chasing pointers for each face.
-
+//
+// NOTE(cmat): For adjacent cell indices, we have the following layout:
+// [ inner cells | halo cells | ghost cells ]
+// - inner cells in [0, cells.len)
+// - halo  cells in [cells.len, cells.len + halos.len)
+// - ghost cells in [cells.len + halos.len, cells.len + halos.len + ghosts.len)
+//
 typedef struct UG_Cell_Faces {
   U32 adjacent  [4]; // NOTE(cmat): Adjacent cell.
   F32 area      [4]; // NOTE(cmat): Face area.
@@ -12,18 +18,18 @@ typedef struct UG_Cell_Faces {
   F32 normal_z  [4];
 } UG_Cell_Faces;
 
-typedef struct UG_Cell_Faces_Verts {
-  V3U verts[4];
-} UG_Cell_Faces_Verts;
-
 typedef struct UG_Cells {
-  U64                  len;
-  // V4U                 *verts;
-  V3F                 *center;
-  F32                 *volume;
-  UG_Cell_Faces       *faces;
-  UG_Cell_Faces_Verts *faces_verts;
+  U64            len;
+  V3F           *center;
+  F32           *volume;
+  UG_Cell_Faces *faces;
 } UG_Cells;
+
+typedef struct UG_Halos {
+  U64         len;
+  U64         block_len;
+  Range1_U64 *block_range;
+} UG_Halos;
 
 typedef struct UG_Ghosts {
   U64  len;
@@ -33,20 +39,21 @@ typedef struct UG_Ghosts {
 } UG_Ghosts;
 
 typedef struct UG_Mesh {
-  Arena       arena;
-  U64         dimension;
   Range3_F32  bounds;
-
-  UG_Grid     grid;
-
-
+  UG_Grid    *grid;
   UG_Cells    cells;
+  UG_Halos    halos;
   UG_Ghosts   ghosts;
 } UG_Mesh;
 
-function void ug_mesh_init                (UG_Mesh *mesh);
-function void ug_mesh_compute_cells_faces (UG_Mesh *mesh);
-function void ug_mesh_assign_ghosts       (UG_Mesh *mesh);
-function void ug_mesh_compute_cells       (UG_Mesh *mesh);
-function void ug_mesh_reorder_cells       (UG_Mesh *mesh);
+typedef struct UG_Mesh_Array {
+  U32      len;
+  UG_Mesh *dat;
+} UG_Mesh_Array;
+
+struct UG_Partition;
+
+function void ug_mesh_init_from_grid        (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
+function void ug_mesh_array_from_partition  (UG_Mesh_Array *mesh_array, UG_Mesh *global_mesh, struct UG_Partition *partition, Arena *arena);
+// function void ug_mesh_optimize_reorder    (UG_Mesh *mesh);
 
