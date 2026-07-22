@@ -95,8 +95,8 @@ linker_flags+=" -o redsim_cpu"
 pushd build > /dev/null 2>&1
 
 echo "compiler      : ${compiler_exec}"
-echo "compiler flags: ${compiler_flags}"
-echo "linker   flags: ${linker_flags}"
+echo "compiler flags:${compiler_flags}"
+echo "linker   flags:${linker_flags}"
 $compiler_exec $source_files $define_flags $include_folders $compiler_flags $linker_flags
 
 popd > /dev/null 2>&1

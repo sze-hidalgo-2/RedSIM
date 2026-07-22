@@ -453,7 +453,7 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
   Arena_Temp scratch = scratch_start(arena);
   log_zone_start("Computing sub-mesh for partition %u", block_index);
 
-  mesh->grid = 0;               // TODO(cmat): Maybe necessary, but only for ensight export right now.
+  mesh->grid = 0; // TODO(cmat): Maybe necessary, but only for ensight export right now.
 
   UG_Partition_Block *block = &partition->blocks_dat[block_index];
   mesh->cells.len           = block->cells_len;
@@ -557,6 +557,9 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
 
   // NOTE(cmat): Sort halo keys.
   lane_barrier();
+
+  // NOTE(cmat): Proper communication consistency is determined by the ordering (partition, globla_cell).
+  // - Both neighboring partitions rely on this ordering, order is important!
   array_sort_radix_u32(halo_total_count, sizeof(UG_Halo_Key) / sizeof(U32), 1, (U32 *)halo_keys); // NOTE(cmat): Sort by global cell (identify duplicates).
   array_sort_radix_u32(halo_total_count, sizeof(UG_Halo_Key) / sizeof(U32), 0, (U32 *)halo_keys); // NOTE(cmat): Sort by partition.
 
@@ -617,22 +620,60 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
   lane_broadcast_u64(&halo_unique_count_global, 0);
   log_info("Halo cell count: %'llu", halo_unique_count_global);
 
+  // NOTE(cmat): Allocate ghost cells.
+  lane_barrier();
+  mesh->ghosts.len = ghost_total_count;
+  if (lane_index() == 0) {
+    mesh->ghosts.parent_cell   = arena_push_count(arena, U32, mesh->ghosts.len);
+    mesh->ghosts.parent_face   = arena_push_count(arena, U08, mesh->ghosts.len);
+    mesh->ghosts.marker_index  = arena_push_count(arena, U32, mesh->ghosts.len);
+  }
+
+  lane_broadcast_ptr(&mesh->ghosts.parent_cell,  0);
+  lane_broadcast_ptr(&mesh->ghosts.parent_face,  0);
+  lane_broadcast_ptr(&mesh->ghosts.marker_index, 0);
+
+  // NOTE(cmat): Patch ghost faces and inner faces.
+  U64 ghost_at = 0;
+  for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
+    for Iter_Index(it_face, 4) {
+      U32  adjacent_global =  mesh->cells.faces[it_cell].adjacent[it_face];
+      U32 *adjacent_local  = &mesh->cells.faces[it_cell].adjacent[it_face];
+
+      if (adjacent_global >= mesh_global->cells.len) {
+        // NOTE(cmat): Ghost.
+        *adjacent_local = mesh->cells.len + halo_unique_count_global + ghost_offset + (ghost_at);
+        mesh->ghosts.parent_cell  [ghost_offset + ghost_at] = it_cell;
+        mesh->ghosts.parent_face  [ghost_offset + ghost_at] = it_face;
+        mesh->ghosts.marker_index [ghost_offset + ghost_at] = mesh_global->ghosts.marker_index[adjacent_global - mesh_global->cells.len];
+        ghost_at += 1;
+      } else if (partition->cells_block_index[adjacent_global] != block_index) {
+        // NOTE(cmat): Halo.
+      } else {
+        // NOTE(cmat): Inner.
+        *adjacent_local = partition->cells_local_index[adjacent_global];
+      }
+    }
+  }
+  
   // NOTE(cmat): Allocate halo information.
   lane_barrier();
   mesh->halos.len       = halo_unique_count_global;
   mesh->halos.block_len = partition->blocks_len;
 
-  U32 *halo_partition   = 0;
+  U32 *halo_partition = 0;
   if (lane_index() == 0) {
     // NOTE(cmat): Allocations zero-ed by default, all ranges are empty, in [0, 0)
     mesh->halos.block_range = arena_push_count(arena,         Range1_U64, mesh->halos.block_len);
+    mesh->halos.cell_send   = arena_push_count(arena,         U32,        mesh->halos.len);
     halo_partition          = arena_push_count(scratch.arena, U32,        mesh->halos.len);
   }
 
   lane_broadcast_ptr(&mesh->halos.block_range,  0);
+  lane_broadcast_ptr(&mesh->halos.cell_send,    0);
   lane_broadcast_ptr(&halo_partition,           0);
 
-  // NOTE(cmat): Assign halo faces.
+  // NOTE(cmat): Assign halo faces and sends.
   lane_barrier();
 
   // NOTE(cmat): Compute local starting halo index.
@@ -671,64 +712,32 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
     mesh->cells.faces[key->cell_local].adjacent[key->face_local] = mesh->cells.len + halo_unique_index;
 
     if (unique) {
-      halo_partition[halo_unique_index] = key->partition;
+      halo_partition[halo_unique_index]         = key->partition;  // NOTE(cmat): Halo index.
+      mesh->halos.cell_send[halo_unique_index]  = key->cell_local; // NOTE(cmat): Send index.
     }
   }
 
   // TODO(cmat): Sanity check, remove once stable.
   if (halo_unique_count[lane_index()] > 0) {
-      U64 expected_end =
-          halo_unique_offset +
-          halo_unique_count[lane_index()] - 1;
-
-      Assert(halo_unique_index == expected_end, "sanity check");
+    U64 expected_end = halo_unique_offset + halo_unique_count[lane_index()] - 1;
+    Assert(halo_unique_index == expected_end, "sanity check");
   }
 
   lane_barrier();
   if (lane_index() == 0) {
     for Iter_Index(it, mesh->halos.len) {
-      U32 partition     = halo_partition[it];
-      Range1_U64 *range = &mesh->halos.block_range[partition];
+      U32         partition   = halo_partition[it];
+      Range1_U64 *halo_range  = &mesh->halos.block_range[partition];
 
       // NOTE(cmat): First halo appearance, initialize.
-      if (range->min == range->max) {
-        range->min = it;
-      }
-
-      range->max = it + 1;
+      if (halo_range->min == halo_range->max) { halo_range->min = it; }
+      halo_range->max = it + 1;
     }
   }
+ 
+  // NOTE(cmat): Fill in sends.
 
-  // NOTE(cmat): Allocate, fill ghost cells.
   lane_barrier();
-  mesh->ghosts.len = ghost_total_count;
-  if (lane_index() == 0) {
-    mesh->ghosts.parent_cell   = arena_push(arena, U32, mesh->ghosts.len);
-    mesh->ghosts.parent_face   = arena_push(arena, U08, mesh->ghosts.len);
-    mesh->ghosts.marker_index  = arena_push(arena, U32, mesh->ghosts.len);
-
-    // NOTE(cmat): Face and marker_index doesn't change for the local partition.
-    // - We only need a gather here.
-    memory_copy(mesh->ghosts.);
-  }
-
-  lane_broadcast_ptr(&mesh->ghosts.parent_cell,  0);
-  lane_broadcast_ptr(&mesh->ghosts.parent_face,  0);
-  lane_broadcast_ptr(&mesh->ghosts.marker_index, 0);
-
- for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
-    for Iter_Index(it_face, 4) {
-      U32  adjacent_global =  mesh->cells.faces[it_cell].adjacent[it_face];
-      U32 *adjacent_local  = &mesh->cells.faces[it_cell].adjacent[it_face];
-
-      // NOTE(cmat): Ghost.
-      if (adjacent_global >= mesh_global->cells.len) {
-        *adjacent_local = ;
-      }
-    }
-  }
-
-
   scratch_end(&scratch);
   log_zone_end();
   profiler_end_function();

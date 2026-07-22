@@ -29,6 +29,7 @@ typedef struct UG_Halos {
   U64         len;
   U64         block_len;
   Range1_U64 *block_range;
+  U32        *cell_send;
 } UG_Halos;
 
 typedef struct UG_Ghosts {

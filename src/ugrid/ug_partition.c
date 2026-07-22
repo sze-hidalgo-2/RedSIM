@@ -30,6 +30,7 @@ function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Rang
       // NOTE(cmat): Assign cells to block.
       block->cells_dat[it]                                = rcb_keys[index].cell;
       partition->cells_block_index[rcb_keys[index].cell]  = partition_begin;
+      partition->cells_local_index[rcb_keys[index].cell]  = it;
     }
     
     lane_barrier();
@@ -89,10 +90,12 @@ function void ug_partition_rcb(UG_Partition *partition, Arena *arena, UG_Mesh *m
   if (lane_index() == 0) {
     partition->blocks_dat         = arena_push_count(arena, UG_Partition_Block, partition_count);
     partition->cells_block_index  = arena_push_count(arena, U32,                mesh->cells.len);
+    partition->cells_local_index  = arena_push_count(arena, U32,                mesh->cells.len);
   }
 
   lane_broadcast_ptr(&partition->blocks_dat,          0);
   lane_broadcast_ptr(&partition->cells_block_index,   0);
+  lane_broadcast_ptr(&partition->cells_local_index,   0);
   ug_partition_rcb_split(partition, arena, bounds, 0, partition_count, range1_u64(0, mesh->cells.len), rcb_keys);
 
   lane_barrier();

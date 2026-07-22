@@ -34,7 +34,7 @@ function void redsim_group_entry(void *user_data) {
     Scratch_Scope(&scratch, 0) {
       // NOTE(cmat): Load grid from file.
       UG_Grid grid = { };
-      ugf_grid_init_from_su2(&grid, scratch.arena, str08_lit("cube_4M.su2"));
+      ugf_grid_init_from_su2(&grid, scratch.arena, str08_lit("cube_30M.su2"));
 
       // NOTE(cmat): Compute mesh based on grid: adjacency + geometry.
       UG_Mesh mesh_global = { };
