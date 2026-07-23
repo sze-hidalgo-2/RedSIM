@@ -64,9 +64,12 @@ function void ipc_init(void) {
 
     // NOTE(cmat): Only one thread at a time makes MPI calls, thus MPI_THREAD_SERIALIZED.
     int provided_support = 0;
-    MPI_Init_thread((int    *)&sys_context()->command_line.argc,
-                    (char ***)&sys_context()->command_line.argv,
-                    MPI_THREAD_SERIALIZED, &provided_support);
+    int mpi_error = MPI_Init_thread((int    *)&sys_context()->command_line.argc,
+                                    (char ***)&sys_context()->command_line.argv,
+                                     MPI_THREAD_SERIALIZED, &provided_support);
+
+    printf("MPI_Init_thread error:            %d\n", mpi_error);
+    printf("MPI_Init_thread provided support: %d\n", provided_support);
     
     I32 rank_count = -1;
     MPI_Comm_size(MPI_COMM_WORLD, &rank_count);
