@@ -221,7 +221,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
   for Iter_Index(it, 100) {
     F64 time_step = fl_solver_euler_solve_step(euler, CFL);
     time         += time_step;
-    log_info("Time: %.2g | Tau: %.2g", time, time_step);
+    // log_info("Time: %.2g | Tau: %.2g", time, time_step);
   }
 
   lane_barrier();

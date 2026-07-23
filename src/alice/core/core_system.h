@@ -108,6 +108,7 @@ link_function SYS_Thread        sys_thread_launch                    (SYS_Thread
 link_function void              sys_thread_join                      (SYS_Thread *thread);
 link_function U64               sys_thread_id                        (void);
 link_function void              sys_thread_set_name                  (Str08 name);
+link_function void              sys_thread_bind_to_cpu               (SYS_CPU cpu_id);
 
 link_function SYS_Barrier       sys_barrier_init                     (U32 count);
 link_function void              sys_barrier_wait                     (SYS_Barrier *barrier);

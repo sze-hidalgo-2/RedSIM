@@ -63,6 +63,10 @@ function void thread_group_destroy(Thread_Group *thread_group) {
 function void *thread_group_entry_setup(void *user_data) {
   Thread_Group_Info *info = (Thread_Group_Info *)user_data;
 
+  // NOTE(cmat): Bind to physical core.
+  // TODO(cmat): We should be able to configure this. Especially for NUMA.
+  sys_thread_bind_to_cpu(info->group_index);
+
   thread_context_init(info->group_barrier, info->group_storage, info->group_name, info->group_index, info->group_count);
   profiler_init_for_thread();
 
