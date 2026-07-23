@@ -3,16 +3,19 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
 
   euler->mesh                 = mesh;
   euler->boundary             = boundary;
+
+  fl_state_init(&euler->flow,     mesh, 1, arena);
+  fl_state_init(&euler->residual, mesh, 0, arena);
+
   euler->time_step_bucket_len = lane_count();
-
-  fl_state_init(&euler->flow,     mesh, arena);
-  fl_state_init(&euler->residual, mesh, arena);
-
+  euler->halo_send_len        = 5 * mesh->halos.len;
   if (lane_index() == 0) {
     euler->time_step_bucket_dat = arena_push_count(arena, F64, euler->time_step_bucket_len);
+    euler->halo_send_dat        = arena_push_count(arena, F32, euler->halo_send_len);
   }
 
-  lane_broadcast_ptr(&euler->time_step_bucket_dat, 0);
+  lane_broadcast_ptr(&euler->time_step_bucket_dat,  0);
+  lane_broadcast_ptr(&euler->halo_send_dat,         0);
 }
 
 function void fl_solver_compute_ghost(FL_Solver_Euler *euler) {
@@ -37,7 +40,7 @@ function void fl_solver_compute_ghost(FL_Solver_Euler *euler) {
   profiler_end_function();
 }
 
-function F64 fl_solver_compute_residual(FL_Solver_Euler *euler, F32 CFL) {
+function void fl_solver_compute_residual(FL_Solver_Euler *euler, F32 CFL) {
   profiler_begin_function();
 
   UG_Mesh  *mesh     = euler->mesh;
@@ -76,9 +79,14 @@ function F64 fl_solver_compute_residual(FL_Solver_Euler *euler, F32 CFL) {
     euler->time_step_bucket_dat[bucket_index]   = f64_min(euler->time_step_bucket_dat[bucket_index], time_step);
   }
 
-  // NOTE(cmat): Compute minimum time_step across buckets.
   lane_barrier();
+  profiler_end_function();
+}
 
+function F64 fl_solver_compute_time_step(FL_Solver_Euler *euler) {
+  profiler_begin_function();
+
+  // NOTE(cmat): Compute minimum time_step across lanes.
   F64 global_time_step = f64_limit_max;
   if (lane_index() == 0) {
     for Iter_Index(it, lane_count()) {
@@ -86,6 +94,7 @@ function F64 fl_solver_compute_residual(FL_Solver_Euler *euler, F32 CFL) {
     }
   }
 
+  // NOTE(cmat): Synchronize minimum time_step across lanes.
   lane_broadcast_u64((U64 *)&global_time_step, 0);
 
   profiler_end_function();
@@ -111,16 +120,77 @@ function void fl_solver_euler_step_explicit(FL_Solver_Euler *euler, F32 time_ste
   profiler_end_function();
 }
 
+function void fl_solver_euler_solve_halo_exchange(FL_Solver_Euler *euler, IPC_Sync_List *sync_list) {
+  UG_Mesh  *mesh = euler->mesh;
+  FL_State *flow = &euler->flow;
+
+  profiler_begin_function(); 
+  U64 tag = 0;
+  for Iter_Index(it_rank, mesh->halos.block_len) {
+    if (it_rank != ipc_rank_index()) {
+      Range1_U64  halo_range  = mesh->halos.block_range[it_rank];
+      U64         halo_len    = range1_u64_len(halo_range);
+
+      if (halo_len) {
+        U64 halo_offset = mesh->cells.len + halo_range.min;
+        U64 tag         = 5 * it_rank;
+
+        // NOTE(cmat): Receive halo data from neighbours.
+        ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->rho    + halo_offset, it_rank, tag + 0);
+        ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->rho_v1 + halo_offset, it_rank, tag + 1);
+        ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->rho_v2 + halo_offset, it_rank, tag + 2);
+        ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->rho_v3 + halo_offset, it_rank, tag + 3);
+        ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->energy + halo_offset, it_rank, tag + 4);
+
+        // NOTE(cmat) Gather halo data to send to neighbours.
+        // - We are doing this multithreaded.
+        for Iter_Index(it_state, 5) {
+          U32 state_offset = it_state * mesh->halos.len;
+          for Iter_Range(it_gather, lane_range(halo_len)) {
+            U32 cell_gather                                 = mesh->halos.cell_send[it_gather];
+            euler->halo_send_dat[state_offset + it_gather]  = flow->states[it_state][cell_gather];
+          }
+        }
+
+        lane_barrier();
+
+        // NOTE(cmat): Send halo data from neighbours.
+        ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + 0 * mesh->halos.len, it_rank, tag + 0);
+        ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + 1 * mesh->halos.len, it_rank, tag + 1);
+        ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + 2 * mesh->halos.len, it_rank, tag + 2);
+        ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + 3 * mesh->halos.len, it_rank, tag + 3);
+        ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + 4 * mesh->halos.len, it_rank, tag + 4);
+      }
+    }
+  }
+
+  lane_barrier();
+  profiler_end_function();
+}
+
 function F64 fl_solver_euler_solve_step(FL_Solver_Euler *euler, F32 CFL) {
   profiler_begin_function();
 
-  // NOTE(cmat): Assign ghost cells first.
-  lane_barrier();
-  fl_solver_compute_ghost(euler);
+  // NOTE(cmat): Exchange halo cells between IPC ranks.
+  IPC_Sync_List sync_list = { };
+  IPC_Sync_Scope(&sync_list) {
+    // NOTE(cmat): Start IPC halo data exchange.
+    fl_solver_euler_solve_halo_exchange(euler, &sync_list);
+
+    // NOTE(cmat): While we are waiting for the halo cells to arrive from,
+    // - other ranks, we compute the ghost cells to save time.
+    fl_solver_compute_ghost(euler);
+  }
 
   // NOTE(cmat): Compute cell residuals.
   lane_barrier();
-  F64 time_step = fl_solver_compute_residual(euler, CFL);
+  fl_solver_compute_residual(euler, CFL);
+
+  // NOTE(cmat): Compute time-step.
+  F64 time_step = fl_solver_compute_time_step(euler);
+
+  // NOTE(cmat): Synchronize minimum time_step across IPC ranks.
+  time_step = ipc_rank_minimum(time_step);
   
   // NOTE(cmat): Explicit-Euler integration.
   fl_solver_euler_step_explicit(euler, (F32)time_step);
@@ -139,7 +209,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
   // NOTE(cmat): Iterate.
   F64 time        = 0;
   F64 time_target = 0.001f;
-  while (time < time_target) {
+  for Iter_Index(it, 300) {
     F64 time_step = fl_solver_euler_solve_step(euler, CFL);
     time         += time_step;
     log_info("Time: %.2f | Tau: %.8f", time, time_step);

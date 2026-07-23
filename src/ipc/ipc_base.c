@@ -191,6 +191,20 @@ function void ipc_rank_receive(IPC_Sync_List *sync_list, U64 bytes_len, void *by
   profiler_end_function();
 }
 
+function F64 ipc_rank_minimum(F64 value) {
+  profiler_begin_function();
+
+  F64 result = 0;
+  if (lane_index() == 0) {
+      MPI_Allreduce(&value, &result, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+  }
+
+  lane_broadcast_u64((U64 *)&result, 0);
+  profiler_end_function();
+
+  return result;
+}
+
 function void log_ipc_context(void) {
   Log_Zone_Scope("IPC Context") {
     log_info("Rank Count: %u", ipc_rank_count());

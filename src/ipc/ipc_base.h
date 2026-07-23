@@ -24,6 +24,7 @@ function void     ipc_rank_sync_list_init     (IPC_Sync_List *sync_list);
 function void     ipc_rank_sync_list_consume  (IPC_Sync_List *sync_list);
 function void     ipc_rank_send               (IPC_Sync_List *sync_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag);
 function void     ipc_rank_receive            (IPC_Sync_List *sync_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag);
+function F64      ipc_rank_minimum            (F64 value);
 
 #define IPC_Sync_Scope(sync_list_) \
   Defer_Scope(ipc_rank_sync_list_init(sync_list_), ipc_rank_sync_list_consume(sync_list_))

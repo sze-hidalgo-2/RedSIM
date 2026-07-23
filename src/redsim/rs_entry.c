@@ -33,7 +33,7 @@ function void redsim_group_entry(void *user_data) {
   arena_init(&sync_arena);
 
   // NOTE(cmat): Load mesh on rank 0 and partition it (still multithreaded, just single rank).
-  // NTOE(cmat): Once we've loaded the mesh on rank 0, distribute to other ranks and partition again
+  // NOTE(cmat): Once we've loaded the mesh on rank 0, distribute to other ranks and partition again
   // - on each rank for each thread group.
   UG_Mesh mesh = { };
   if (ipc_rank_index() == 0) {
@@ -76,7 +76,7 @@ function void redsim_group_entry(void *user_data) {
   ipc_rank_barrier();
  
   FL_Solver_Euler solver    = {};
-  FL_Boundary_Map boundary  = { };
+  FL_Boundary_Map boundary  = {};
   
   // NOTE(cmat): Init boundary map.
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
@@ -93,7 +93,16 @@ function void redsim_group_entry(void *user_data) {
   lane_barrier();
   fl_solver_euler_init(&solver, &boundary, &mesh, &permanent_arena);
 
+  // NOTE(cmat): Initial condition.
+  lane_barrier();
+  fl_setup_sod(&solver.flow, &mesh);
+
   // NOTE(cmat): Iterate and solve.
+  lane_barrier();
+
+  // NOTE(cmat): Synchronize all MPI ranks for more accurate
+  // - benchmarking measurements for load balacing.
+  ipc_rank_barrier();
   fl_solver_euler_solve(&solver);
 
   log_zone_end();

@@ -1,7 +1,11 @@
-function void fl_state_init(FL_State *fl, UG_Mesh *mesh, Arena *arena) {
+function void fl_state_init(FL_State *fl, UG_Mesh *mesh, B32 store_ghost_halo, Arena *arena) {
   Zero_Fill(fl);
 
-  U64  total_len = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
+  U64 total_len = mesh->cells.len;
+  if (store_ghost_halo) {
+    total_len += mesh->halos.len + mesh->ghosts.len;
+  }
+
   F32 *total_dat = 0;
   if (lane_index() == 0) {
     total_dat = arena_push_count(arena, F32, 5 * total_len);
@@ -13,8 +17,8 @@ function void fl_state_init(FL_State *fl, UG_Mesh *mesh, Arena *arena) {
   fl->gas_constant = 287.05f; // J / (kg * K)
 
   fl->inner_len    = mesh->cells.len;
-  fl->halo_len     = mesh->halos.len;
-  fl->ghost_len    = mesh->ghosts.len;
+  fl->halo_len     = store_ghost_halo ? mesh->halos.len   : 0;
+  fl->ghost_len    = store_ghost_halo ? mesh->ghosts.len  : 0;
 
   fl->rho          = total_dat + 0 * total_len;
   fl->rho_v1       = total_dat + 1 * total_len;

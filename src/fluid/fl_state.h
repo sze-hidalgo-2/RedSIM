@@ -17,10 +17,9 @@ typedef struct FL_State {
 
     F32 *states[5];
   };
-
 } FL_State;
 
-function void fl_state_init                     (FL_State *fl, UG_Mesh *mesh, Arena *arena);
+function void fl_state_init                     (FL_State *fl, UG_Mesh *mesh, B32 store_ghost_halo, Arena *arena);
 function void fl_state_set                      (FL_State *fl, U64 at, V5F state);
 function V5F  fl_state_get                      (FL_State *fl, U64 at);
 function F32  fl_state_get_pressure             (FL_State *fl, U64 at);
