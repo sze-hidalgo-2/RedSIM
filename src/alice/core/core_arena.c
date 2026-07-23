@@ -207,10 +207,16 @@ function U08 *arena_allocate_within_new_chunk(Arena *arena, U64 bytes, Arena_Pus
     U64 chunk_reserve = bytes > default_chunk_bytes ? bytes : default_chunk_bytes;
 
     arena->last_chunk = arena_chunk_init(arena->last_chunk, chunk_reserve);
-    Assert(arena->last_chunk, "failed to allocate new chunk");
+    // Assert(arena->last_chunk, "failed to allocate new chunk");
+    if (!arena->last_chunk) {
+      sys_panic(str08_lit("arena: failed to allocate new chunk"));
+    }
     
     U08 *user_allocation = arena_chunk_allocate(arena->last_chunk, bytes, config);
-    Assert(user_allocation, "failed to allocate memory");
+    // Assert(user_allocation, "failed to allocate memory");
+    if (!user_allocation) {
+      sys_panic(str08_lit("arena: failed to allocate memory"));
+    }
 
     return user_allocation;
 }

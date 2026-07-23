@@ -60,7 +60,6 @@ if [[ -n ${asan-} ]]; then
   compiler_flags+=" -fno-omit-frame-pointer"
 else
   echo "address sanitizer: no"
-  define_flags+=" -DBUILD_PROFILE=1"
 fi
 
 if [[ -n ${no_debug-} ]]; then
