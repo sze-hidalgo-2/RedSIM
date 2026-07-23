@@ -68,6 +68,11 @@ function void redsim_group_entry(void *user_data) {
       // NOTE(cmat): Compute cellst to send between block for the other ranks (scratch storage).
       ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
 
+      // NOTE(cmat): Reorder every mesh to improve cache locality.
+      for Iter_Index(it, mesh_array.len) {
+        ug_mesh_optimize_reorder(&mesh_array.dat[it]);
+      }
+
       // NOTE(cmat): Broadcast mesh array to all ranks.
       ug_mesh_ipc_distribute(&mesh_array);
 

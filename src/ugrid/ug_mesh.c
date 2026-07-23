@@ -920,3 +920,98 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
   lane_barrier();
   profiler_end_function();
 }
+
+// ------------------------------------------------------------
+// #-- Reorder optimization
+
+// NOTE(cmat): Reodering is really important, since it improves immensly
+// - on cache locality. For a simple mesh, I measured gains from 600ms -> 74ms,
+// - just by sorting by Morton code (Hilbert curves are "technically" marginally better,
+// - but are so cumbersome and expensive to compute I just think they don't make sense).
+//
+// NOTE(cmat): The only tricky part here is that we have to make sure that the indices referred
+// - to in the mesh (adjacent, etc.) are also remapped.
+
+function void ug_mesh_optimize_reorder(UG_Mesh *mesh) {
+  profiler_begin_function();
+  Arena_Temp scratch = scratch_start(0);
+  log_zone_start("Reodering cells");
+
+  // NOTE(cmat): Compute morton codes for each cell center
+  log_info("Computing morton codes");
+
+  // NOTE(cmat): Data layout: [ morton code | local cell index ]
+  V2_U64 *morton_codes = 0;
+  if (lane_index() == 0) {
+    morton_codes = arena_push_count(scratch.arena, V2_U64, mesh->cells.len);
+  }
+
+  lane_broadcast_ptr(&morton_codes, 0);
+
+  V3F bounds_len_rcp = v3f_rcp(range3_f32_len(mesh->bounds));
+  for Iter_Range(it, lane_range(mesh->cells.len)) {
+    V3F center_normed = v3f_had(v3f_sub(mesh->cells.center[it], mesh->bounds.min), bounds_len_rcp);
+
+    V2_U64 *entry = morton_codes + it;
+    entry->x      = morton64_encode_v3f(center_normed);
+    entry->y      = it;
+  }
+
+  // NOTE(cmat): Sort morton codes.
+  lane_barrier();
+  log_info("Sorting cells by morton code");
+  array_sort_radix_u64(mesh->cells.len, 2, 0, (U64 *)morton_codes);
+
+  // NOTE(cmat): Compute old index -> new index map
+  lane_barrier();
+
+  U32 *old_to_new = 0;
+  if (lane_index() == 0) {
+    old_to_new = arena_push_count(scratch.arena, U32, mesh->cells.len);
+  }
+
+  lane_broadcast_ptr(&old_to_new, 0);
+
+  for Iter_Range(it, lane_range(mesh->cells.len)) {
+    U32 old = (U32)morton_codes[it].y;
+    old_to_new[old] = it;
+  }
+
+  // NOTE(cmat): Reorder elements.
+  lane_barrier();
+  log_info("Reodering elements");
+  array_reorder(mesh->cells.len,  sizeof(V3F),           (U08 *)mesh->cells.center,       sizeof(V2_U64), &morton_codes->y);
+  array_reorder(mesh->cells.len,  sizeof(F32),           (U08 *)mesh->cells.volume,       sizeof(V2_U64), &morton_codes->y);
+  array_reorder(mesh->cells.len,  sizeof(UG_Cell_Faces), (U08 *)mesh->cells.faces,        sizeof(V2_U64), &morton_codes->y);
+
+
+  // NOTE(cmat): Remap adjacent cells (only inner ones).
+  lane_barrier();
+  log_info("Reindexing elements");
+  for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
+    for Iter_Index(it_face, 4) {
+      U32  old_adjacent =  mesh->cells.faces[it_cell].adjacent[it_face];
+      U32 *new_adjacent = &mesh->cells.faces[it_cell].adjacent[it_face];
+
+      if (old_adjacent < mesh->cells.len) {
+        *new_adjacent = old_to_new[old_adjacent];
+      }
+    }
+  }
+
+  // NOTE(cmat): Remap ghost parents.
+  for Iter_Range(it, lane_range(mesh->ghosts.len)) {
+    mesh->ghosts.parent_cell[it] = old_to_new[mesh->ghosts.parent_cell[it]];
+  }
+
+  // NOTE(cmat): Remap send cells
+  for Iter_Range(it, lane_range(mesh->sends.len)) {
+    mesh->sends.cell_send[it] = old_to_new[mesh->sends.cell_send[it]];
+  }
+
+
+  lane_barrier();
+  log_zone_end();
+  scratch_end(&scratch);
+  profiler_end_function();
+}
