@@ -27,7 +27,7 @@ function void fl_solver_compute_ghost(FL_Solver_Euler *euler) {
     U64 cell_parent_index = mesh->ghosts.parent_cell  [it];
     U08 face_parent_index = mesh->ghosts.parent_face  [it];
     U32 marker_index      = mesh->ghosts.marker_index [it];
-    U64 flow_ghost_index  = mesh->cells.len + it;
+    U64 flow_ghost_index  = mesh->cells.len + mesh->halos.len + it;
 
     UG_Cell_Faces *faces  = &mesh->cells.faces[cell_parent_index];
     V3F normal            = v3f(faces->normal_x[face_parent_index], faces->normal_y[face_parent_index], faces->normal_z[face_parent_index]);
@@ -48,7 +48,7 @@ function void fl_solver_compute_residual(FL_Solver_Euler *euler, F32 CFL) {
   FL_State *residual = &euler->residual;
 
   U64 bucket_index                          = lane_index();
-  euler->time_step_bucket_dat[bucket_index] = f32_limit_max;
+  euler->time_step_bucket_dat[bucket_index] = f64_limit_max;
 
   for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
     V5F cell_residual = v5f(0, 0, 0, 0, 0);
@@ -125,29 +125,27 @@ function void fl_solver_euler_solve_halo_exchange(FL_Solver_Euler *euler, IPC_Sy
   FL_State *flow = &euler->flow;
 
   profiler_begin_function(); 
-  U64 tag = 0;
   for Iter_Index(it_rank, mesh->halos.block_len) {
     if (it_rank != ipc_rank_index()) {
       Range1_U64  halo_range  = mesh->halos.block_range[it_rank];
       U64         halo_len    = range1_u64_len(halo_range);
 
       if (halo_len) {
-        U64 halo_offset = mesh->cells.len + halo_range.min;
-        U64 tag         = 5 * it_rank;
+        U64 own_tag   = 5 * ipc_rank_index();
+        U64 other_tag = 5 * it_rank;
 
         // NOTE(cmat): Receive halo data from neighbours.
-        ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->rho    + halo_offset, it_rank, tag + 0);
-        ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->rho_v1 + halo_offset, it_rank, tag + 1);
-        ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->rho_v2 + halo_offset, it_rank, tag + 2);
-        ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->rho_v3 + halo_offset, it_rank, tag + 3);
-        ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->energy + halo_offset, it_rank, tag + 4);
+        for Iter_Index(it_state, 5) {
+          U64 offset = mesh->cells.len + halo_range.min;
+          ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->states[it_state] + offset, it_rank, own_tag + it_state);
+        }
 
         // NOTE(cmat) Gather halo data to send to neighbours.
         // - We are doing this multithreaded.
         for Iter_Index(it_state, 5) {
           U32 state_offset = it_state * mesh->halos.len;
           for Iter_Range(it_gather, lane_range(halo_len)) {
-            U32 cell_gather                                 = mesh->halos.cell_send[it_gather];
+            U32 cell_gather                                 = mesh->halos.cell_send[halo_range.min + it_gather];
             euler->halo_send_dat[state_offset + it_gather]  = flow->states[it_state][cell_gather];
           }
         }
@@ -155,11 +153,10 @@ function void fl_solver_euler_solve_halo_exchange(FL_Solver_Euler *euler, IPC_Sy
         lane_barrier();
 
         // NOTE(cmat): Send halo data from neighbours.
-        ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + 0 * mesh->halos.len, it_rank, tag + 0);
-        ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + 1 * mesh->halos.len, it_rank, tag + 1);
-        ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + 2 * mesh->halos.len, it_rank, tag + 2);
-        ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + 3 * mesh->halos.len, it_rank, tag + 3);
-        ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + 4 * mesh->halos.len, it_rank, tag + 4);
+        for Iter_Index(it_state, 5) {
+          U64 offset = it_state * mesh->halos.len + halo_range.min;
+          ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + offset, it_rank, other_tag + it_state);
+        }
       }
     }
   }
@@ -180,10 +177,10 @@ function F64 fl_solver_euler_solve_step(FL_Solver_Euler *euler, F32 CFL) {
     // NOTE(cmat): While we are waiting for the halo cells to arrive from,
     // - other ranks, we compute the ghost cells to save time.
     fl_solver_compute_ghost(euler);
+    lane_barrier();
   }
 
   // NOTE(cmat): Compute cell residuals.
-  lane_barrier();
   fl_solver_compute_residual(euler, CFL);
 
   // NOTE(cmat): Compute time-step.
