@@ -50,12 +50,17 @@ if [[ -n ${release-} ]]; then
 else
   echo "release: no"
   compiler_flags+=" -O0"
+  define_flags+=" -DBUILD_ASSERT=1"
+fi
 
-  # NOTE(cmat): Doesn't work with OpenMPI :-(
+if [[ -n ${asan-} ]]; then
+  echo "address sanitizer: yes"
   compiler_flags+=" -fsanitize=address"
   compiler_flags+=" -fsanitize-address-use-after-scope"
   compiler_flags+=" -fno-omit-frame-pointer"
-  define_flags+=" -DBUILD_ASSERT=1"
+else
+  echo "address sanitizer: no"
+  define_flags+=" -DBUILD_PROFILE=1"
 fi
 
 if [[ -n ${no_debug-} ]]; then

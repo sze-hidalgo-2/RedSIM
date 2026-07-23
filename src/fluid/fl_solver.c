@@ -198,8 +198,6 @@ function F64 fl_solver_euler_solve_step(FL_Solver_Euler *euler, F32 CFL) {
   // NOTE(cmat): Compute time-step.
   F64 time_step = fl_solver_compute_time_step(euler);
 
-  log_info("%f", time_step);
-
   // NOTE(cmat): Synchronize minimum time_step across IPC ranks.
   time_step = ipc_rank_minimum(time_step);
 
