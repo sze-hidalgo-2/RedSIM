@@ -41,7 +41,9 @@ function void redsim_group_entry(void *user_data) {
     Scratch_Scope(&scratch, 0) {
       // NOTE(cmat): Load grid from file.
       UG_Grid grid = { };
-      ugf_grid_init_from_su2(&grid, scratch.arena, str08_lit("cube_4M.su2"));
+
+      Str08 su2_file = str08_from_cstring((char *)sys_context()->command_line.argv[1]);
+      ugf_grid_init_from_su2(&grid, scratch.arena, su2_file);
 
       // NOTE(cmat): Compute mesh based on grid: adjacency + geometry.
       UG_Mesh mesh_global = { };
@@ -122,27 +124,32 @@ function void redsim_group_entry(void *user_data) {
 
 link_function void redsim_entry_point(void) {
   profiler_begin_function();
-
   log_info("RedSIM 1.0 | Build Hash: %S", Build_Hash_Str08);
-  log_sys_context();      // NOTE(cmat): Log system information.
-  log_ipc_context();      // NOTE(cmat): Log IPC context.
-  log_sys_numa_layout();  // NOTE(cmat): Log NUMA layout.
-
-  U32 thread_count = 0;
-  if (sys_numa_layout()->nodes_len > 0) {
-    // thread_count = sys_numa_layout()->nodes_dat[0].cpus_len;
-    thread_count = sys_context()->cpu_logical_cores;
+  
+  // NOTE(cmat): Check command syntax.
+  if (sys_context()->command_line.argc != 2) {
+    log_info("Command Syntax: ./redsim_cpu [mesh_file]");
   } else {
-    thread_count = sys_context()->cpu_logical_cores;
+    log_sys_context();      // NOTE(cmat): Log system information.
+    log_ipc_context();      // NOTE(cmat): Log IPC context.
+    log_sys_numa_layout();  // NOTE(cmat): Log NUMA layout.
+
+    U32 thread_count = 0;
+    if (sys_numa_layout()->nodes_len > 0) {
+      // thread_count = sys_numa_layout()->nodes_dat[0].cpus_len;
+      thread_count = sys_context()->cpu_logical_cores;
+    } else {
+      thread_count = sys_context()->cpu_logical_cores;
+    }
+
+    Thread_Group thread_group = { };
+    log_info("Launching global thread group with %u threads", thread_count);
+
+    thread_group_init     (&thread_group, str08_lit("Sim_Group"), thread_count);
+    thread_group_launch   (&thread_group, redsim_group_entry, 0);
+    thread_group_wait_all (&thread_group);
+    thread_group_destroy  (&thread_group);
   }
-
-  Thread_Group thread_group = { };
-  log_info("Launching global thread group with %u threads", thread_count);
-
-  thread_group_init     (&thread_group, str08_lit("Sim_Group"), thread_count);
-  thread_group_launch   (&thread_group, redsim_group_entry, 0);
-  thread_group_wait_all (&thread_group);
-  thread_group_destroy  (&thread_group);
 
   profiler_end_function();
 }
