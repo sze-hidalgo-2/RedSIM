@@ -36,7 +36,7 @@ function void ug_mesh_compute_cells(UG_Mesh *mesh, UG_Grid *grid, Arena *arena) 
   lane_broadcast_ptr(&mesh->cells.center,  0);
   lane_broadcast_ptr(&mesh->cells.volume,  0);
   lane_broadcast_ptr(&bounds_global,        0);
-
+  
   Range3_F32 *bounds_local = bounds_global + lane_index();
   *bounds_local = range3_f32(v3f_f32(f32_limit_max), v3f_f32(f32_limit_min));
 
@@ -471,6 +471,50 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
     mesh->cells.volume[it]  = mesh_global->cells.volume [block->cells_dat[it]];
     mesh->cells.faces[it]   = mesh_global->cells.faces  [block->cells_dat[it]];
   }
+
+  // NOTE(cmat): Compute new mesh bounds.
+  lane_barrier();
+
+  Range3_F32 *bounds_global = 0;
+  if (lane_index() == 0) {
+    bounds_global = arena_push_count(scratch.arena, Range3_F32, lane_count());
+  }
+
+  lane_broadcast_ptr(&bounds_global, 0);
+
+  Range3_F32 *bounds_local = bounds_global + lane_index();
+  *bounds_local = range3_f32(v3f_f32(f32_limit_max), v3f_f32(f32_limit_min));
+  for Iter_Range(it, lane_range(mesh->cells.len)) {
+    // TODO(cmat): We don't have the grid anymore, so we're computing this for the centers.
+    // - This should still work with morton of course (arguably even better), but once we have the grid again,
+    // - we should switch to the real bounds once again for consistency and to avoid confusion.
+    bounds_local->min.x = f32_min(bounds_local->min.x, mesh->cells.center[it].x);
+    bounds_local->min.y = f32_min(bounds_local->min.y, mesh->cells.center[it].y);
+    bounds_local->min.z = f32_min(bounds_local->min.z, mesh->cells.center[it].z);
+
+    bounds_local->max.x = f32_max(bounds_local->max.x, mesh->cells.center[it].x);
+    bounds_local->max.y = f32_max(bounds_local->max.y, mesh->cells.center[it].y);
+    bounds_local->max.z = f32_max(bounds_local->max.z, mesh->cells.center[it].z);
+  }
+
+  // NOTE(cmat): Reduce bounds.
+  lane_barrier();
+  if (lane_index() == 0) {
+    Range3_F32 bounds = range3_f32(v3f_f32(f32_limit_max), v3f_f32(f32_limit_min));
+    for Iter_Index(it, lane_count()) {
+      for Iter_Index(elem, 3) {
+        bounds.min.dat[elem] = f32_min(bounds.min.dat[elem], bounds_global[it].min.dat[elem]);
+        bounds.max.dat[elem] = f32_max(bounds.max.dat[elem], bounds_global[it].max.dat[elem]);
+      }
+    }
+
+    // NOTE(cmat): Store the final bounds in the first slot.
+    bounds_global[0] = bounds;
+  }
+
+  // NOTE(cmat): Set bounds.
+  mesh->bounds = bounds_global[0];
+  log_info("Bounds: (%f, %f, %f), (%f, %f, %f)", V3_Expand(mesh->bounds.min), V3_Expand(mesh->bounds.max));
 
   // NOTE(cmat): Compute ghost cell count, halo cell count.
   lane_barrier();
