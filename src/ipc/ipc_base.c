@@ -123,6 +123,7 @@ function void ipc_rank_sync_list_consume(IPC_Sync_List *sync_list) {
     }
   }
 
+  lane_barrier();
   scratch_end(&scratch);
   profiler_end_function();
 }

@@ -142,14 +142,14 @@ function void ug_mesh_compute_cells_faces(UG_Mesh *mesh, UG_Grid *grid, Arena *a
   for Iter_Range(it, lane_range(grid->elems.len)) {
     
     // NOTE(cmat): Sort grid vertices, so that each face is unique in its description.
-    V4U *cell = &grid->elems.verts[it];
-    v4_u32_sort(cell);
+    V4U cell = grid->elems.verts[it];
+    v4_u32_sort(&cell);
 
     U64 face_index                = 4 * it;
-    faces_all_dat[face_index + 0] = (UG_Tetra_Face) { .verts = v3u(cell->x, cell->y, cell->z), .cell = it, .face = 0 };
-    faces_all_dat[face_index + 1] = (UG_Tetra_Face) { .verts = v3u(cell->x, cell->y, cell->w), .cell = it, .face = 1 };
-    faces_all_dat[face_index + 2] = (UG_Tetra_Face) { .verts = v3u(cell->x, cell->z, cell->w), .cell = it, .face = 2 };
-    faces_all_dat[face_index + 3] = (UG_Tetra_Face) { .verts = v3u(cell->y, cell->z, cell->w), .cell = it, .face = 3 };
+    faces_all_dat[face_index + 0] = (UG_Tetra_Face) { .verts = v3u(cell.x, cell.y, cell.z), .cell = it, .face = 0 };
+    faces_all_dat[face_index + 1] = (UG_Tetra_Face) { .verts = v3u(cell.x, cell.y, cell.w), .cell = it, .face = 1 };
+    faces_all_dat[face_index + 2] = (UG_Tetra_Face) { .verts = v3u(cell.x, cell.z, cell.w), .cell = it, .face = 2 };
+    faces_all_dat[face_index + 3] = (UG_Tetra_Face) { .verts = v3u(cell.y, cell.z, cell.w), .cell = it, .face = 3 };
   }
 
   // NOTE(cmat): Now we radix-sort all faces resulting in duplicates being next to each other.
@@ -662,12 +662,12 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
   if (lane_index() == 0) {
     // NOTE(cmat): Allocations zero-ed by default, all ranges are empty, in [0, 0)
     mesh->halos.block_range = arena_push_count(arena,         Range1_U64, mesh->halos.block_len);
-    mesh->halos.cell_send   = arena_push_count(arena,         U32,        mesh->halos.len);
+    mesh->halos.cell_global = arena_push_count(arena,         U32,        mesh->halos.len);
     halo_partition          = arena_push_count(scratch.arena, U32,        mesh->halos.len);
   }
 
   lane_broadcast_ptr(&mesh->halos.block_range,  0);
-  lane_broadcast_ptr(&mesh->halos.cell_send,    0);
+  lane_broadcast_ptr(&mesh->halos.cell_global,  0);
   lane_broadcast_ptr(&halo_partition,           0);
 
   // NOTE(cmat): Assign halo faces and sends.
@@ -709,8 +709,8 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
     mesh->cells.faces[key->cell_local].adjacent[key->face_local] = mesh->cells.len + halo_unique_index;
 
     if (unique) {
-      halo_partition[halo_unique_index]         = key->partition;  // NOTE(cmat): Halo index.
-      mesh->halos.cell_send[halo_unique_index]  = key->cell_local; // NOTE(cmat): Send index.
+      halo_partition          [halo_unique_index] = key->partition;   // NOTE(cmat): Halo index.
+      mesh->halos.cell_global [halo_unique_index] = key->cell_global; // NOTE(cmat): Store global index for sends.
     }
   }
 
@@ -765,6 +765,65 @@ function void ug_mesh_array_from_partition(UG_Mesh_Array *mesh_array, UG_Mesh *g
   profiler_end_function();
 }
 
+function void ug_mesh_array_compute_sends(UG_Mesh_Array *mesh_array, struct UG_Partition *partition, Range1_U64 partition_range, Arena *arena) {
+  profiler_begin_function();
+  log_info("Computing mesh array sends for range [%'llu, %'llu)", partition_range.min, partition_range.max);
+
+  for Iter_Range(block_index, partition_range) {
+    UG_Mesh *mesh = &mesh_array->dat[block_index];
+
+    // TODO(cmat): Multi lane.
+    if (lane_index() == 0) {
+      mesh->sends.block_len   = partition->blocks_len;
+      mesh->sends.block_range = arena_push_count(arena, Range1_U64, partition->blocks_len);
+
+      // NOTE(cmat): Compute send ranges.
+      U64 send_at = 0;
+      for Iter_Index(it_block, partition->blocks_len) {
+        if (it_block != block_index) {
+          UG_Mesh   *other_mesh = &mesh_array->dat[it_block];
+          Range1_U64 range      = other_mesh->halos.block_range[block_index];
+          U64        range_len  = range1_u64_len(range);
+
+          mesh->sends.block_range[it_block] = range1_u64(send_at, send_at + range_len);
+          send_at += range_len;
+        } else {
+          mesh->sends.block_range[it_block] = range1_u64(send_at, send_at);
+        }
+      }
+
+      // NOTE(cmat): Allocate cell send.
+      mesh->sends.len       = send_at;
+      mesh->sends.cell_send = arena_push_count(arena, U32, send_at);
+      log_info("Sends count: %'llu", mesh->sends.len);
+
+      // NOTE(cmat): Fill cell send.
+      send_at = 0;
+      for Iter_Index(it_block, partition->blocks_len) {
+        if (it_block != block_index) {
+          UG_Mesh   *other_mesh = &mesh_array->dat[it_block];
+          Range1_U64 range      = other_mesh->halos.block_range[block_index];
+          U64        range_len  = range1_u64_len(range);
+
+          for Iter_Index(it_cell, range_len) {
+            U64 cell_global = other_mesh->halos.cell_global[range.min + it_cell];
+            Assert(partition->cells_block_index[cell_global] == block_index, "invalid halo setup");
+            U64 cell_local  = partition->cells_local_index[cell_global];
+
+            mesh->sends.cell_send[send_at++] = cell_local;
+          }
+        }
+      }
+
+      Assert(send_at == mesh->sends.len, "invalid indexing");
+    }
+    
+    lane_broadcast_type(&mesh->sends, 0);
+  }
+
+  profiler_end_function();
+}
+
 // ------------------------------------------------------------
 // #-- IPC Commnuication
 
@@ -789,7 +848,11 @@ function void ug_mesh_ipc_distribute(UG_Mesh_Array *mesh_array) {
         
         // NOTE(cmat): UG_Halos
         ipc_rank_send(&sync_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
-        ipc_rank_send(&sync_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_send,      rank, 0);
+        ipc_rank_send(&sync_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_global,    rank, 0);
+
+        // NOTE(cmat): UG_Sends
+        ipc_rank_send(&sync_list, mesh->sends.block_len   * sizeof(Range1_U64), mesh->sends.block_range,    rank, 0);
+        ipc_rank_send(&sync_list, mesh->sends.len         * sizeof(U32),        mesh->sends.cell_send,      rank, 0);
 
         // NOTE(cmat): UG_Ghosts
         ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.parent_cell,   rank, 0);
@@ -812,16 +875,28 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
     ipc_rank_receive(&sync_list, sizeof(UG_Mesh), mesh, rank, 0);
   }
 
-  mesh->cells.center        = arena_push_count(arena, V3F,            mesh->cells.len);
-  mesh->cells.volume        = arena_push_count(arena, F32,            mesh->cells.len);
-  mesh->cells.faces         = arena_push_count(arena, UG_Cell_Faces,  mesh->cells.len);
+  // NOTE(cmat): UG_Cells
+  if (lane_index() == 0) {
+    mesh->cells.center        = arena_push_count(arena, V3F,            mesh->cells.len);
+    mesh->cells.volume        = arena_push_count(arena, F32,            mesh->cells.len);
+    mesh->cells.faces         = arena_push_count(arena, UG_Cell_Faces,  mesh->cells.len);
 
-  mesh->halos.block_range   = arena_push_count(arena, Range1_U64,     mesh->halos.block_len);
-  mesh->halos.cell_send     = arena_push_count(arena, U32,            mesh->halos.len);
+    // NOTE(cmat): UG_Halos
+    mesh->halos.block_range   = arena_push_count(arena, Range1_U64,     mesh->halos.block_len);
+    mesh->halos.cell_global   = arena_push_count(arena, U32,            mesh->halos.len);
 
-  mesh->ghosts.parent_cell  = arena_push_count(arena, U32,            mesh->ghosts.len);
-  mesh->ghosts.parent_face  = arena_push_count(arena, U08,            mesh->ghosts.len);
-  mesh->ghosts.marker_index = arena_push_count(arena, U32,            mesh->ghosts.len);
+    // NOTE(cmat): UG_Sends
+    mesh->sends.block_range   = arena_push_count(arena, Range1_U64,     mesh->sends.block_len);
+    mesh->sends.cell_send     = arena_push_count(arena, U32,            mesh->sends.len);
+
+    // NOTE(cmat): UG_Ghosts
+    mesh->ghosts.parent_cell  = arena_push_count(arena, U32,            mesh->ghosts.len);
+    mesh->ghosts.parent_face  = arena_push_count(arena, U08,            mesh->ghosts.len);
+    mesh->ghosts.marker_index = arena_push_count(arena, U32,            mesh->ghosts.len);
+  }
+
+  // NOTE(cmat): Synchronize mesh.
+  lane_broadcast_type(mesh, 0);
 
   IPC_Sync_Scope(&sync_list) {
     // NOTE(cmat): UG_Cells
@@ -831,7 +906,11 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
     
     // NOTE(cmat): UG_Halos
     ipc_rank_receive(&sync_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
-    ipc_rank_receive(&sync_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_send,      rank, 0);
+    ipc_rank_receive(&sync_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_global,    rank, 0);
+
+    // NOTE(cmat): UG_Sends
+    ipc_rank_receive(&sync_list, mesh->sends.block_len * sizeof(Range1_U64), mesh->sends.block_range,    rank, 0);
+    ipc_rank_receive(&sync_list, mesh->sends.len       * sizeof(U32),        mesh->sends.cell_send,      rank, 0);
 
     // NOTE(cmat): UG_Ghosts
     ipc_rank_receive(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.parent_cell,   rank, 0);

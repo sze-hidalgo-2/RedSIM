@@ -8,7 +8,7 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
   fl_state_init(&euler->residual, mesh, 0, arena);
 
   euler->time_step_bucket_len = lane_count();
-  euler->halo_send_len        = 5 * mesh->halos.len;
+  euler->halo_send_len        = 5 * mesh->sends.len;
   if (lane_index() == 0) {
     euler->time_step_bucket_dat = arena_push_count(arena, F64, euler->time_step_bucket_len);
     euler->halo_send_dat        = arena_push_count(arena, F32, euler->halo_send_len);
@@ -33,7 +33,7 @@ function void fl_solver_compute_ghost(FL_Solver_Euler *euler) {
     V3F normal            = v3f(faces->normal_x[face_parent_index], faces->normal_y[face_parent_index], faces->normal_z[face_parent_index]);
     V5F inner_state       = fl_state_get(&euler->flow, cell_parent_index);
     V5F ghost_state       = fl_boundary_map_ghost(euler->boundary, marker_index, inner_state, normal, euler->flow.gamma);
-    
+
     fl_state_set(&euler->flow, flow_ghost_index, ghost_state);
   }
 
@@ -63,7 +63,7 @@ function void fl_solver_compute_residual(FL_Solver_Euler *euler, F32 CFL) {
       V5F right_state = v5f(flow->rho[adjacent], flow->rho_v1[adjacent], flow->rho_v2[adjacent], flow->rho_v3[adjacent], flow->energy[adjacent]);
       FL_Flux flux    = fl_flux_hllc(left_state, right_state, normal, flow->gamma);
       cell_residual   = v5f_sub(cell_residual, v5f_mul(area, flux.state));
-      spectral_sum   += (F64)area * (F64)flux.lambda_max; 
+      spectral_sum   += (F64)area * (F64)flux.lambda_max;
     }
 
     F32 volume     = mesh->cells.volume[it_cell];
@@ -121,10 +121,11 @@ function void fl_solver_euler_step_explicit(FL_Solver_Euler *euler, F32 time_ste
 }
 
 function void fl_solver_euler_solve_halo_exchange(FL_Solver_Euler *euler, IPC_Sync_List *sync_list) {
+  profiler_begin_function();
   UG_Mesh  *mesh = euler->mesh;
   FL_State *flow = &euler->flow;
 
-  profiler_begin_function(); 
+  // NOTE(cmat): Post IPC receives first, that way we can start immediately when we receive a send.
   for Iter_Index(it_rank, mesh->halos.block_len) {
     if (it_rank != ipc_rank_index()) {
       Range1_U64  halo_range  = mesh->halos.block_range[it_rank];
@@ -132,30 +133,41 @@ function void fl_solver_euler_solve_halo_exchange(FL_Solver_Euler *euler, IPC_Sy
 
       if (halo_len) {
         U64 own_tag   = 5 * ipc_rank_index();
-        U64 other_tag = 5 * it_rank;
 
         // NOTE(cmat): Receive halo data from neighbours.
         for Iter_Index(it_state, 5) {
           U64 offset = mesh->cells.len + halo_range.min;
           ipc_rank_receive(sync_list, halo_len * sizeof(F32), flow->states[it_state] + offset, it_rank, own_tag + it_state);
         }
+      }
+    }
+  }
 
-        // NOTE(cmat) Gather halo data to send to neighbours.
-        // - We are doing this multithreaded.
+  // NOTE(cmat) Gather all "send" data to send to neighbours.
+  for Iter_Index(it_state, 5) {
+    U32 state_offset = it_state * mesh->sends.len;
+    for Iter_Range(it_gather, lane_range(mesh->sends.len)) {
+      U32 cell_gather                                 = mesh->sends.cell_send[it_gather];
+      euler->halo_send_dat[state_offset + it_gather]  = flow->states[it_state][cell_gather];
+    }
+  }
+
+  // NOTE(cmat): Wait for lanes to have gathered all the send data.
+  lane_barrier();
+
+  // NOTE(cmat): Now we issue the IPC sends, exchaning halo data between ranks.
+  for Iter_Index(it_rank, mesh->sends.block_len) {
+    if (it_rank != ipc_rank_index()) {
+      Range1_U64  send_range  = mesh->sends.block_range[it_rank];
+      U64         send_len    = range1_u64_len(send_range);
+
+      if (send_len) {
+        U64 other_tag = 5 * it_rank;
+
+        // NOTE(cmat): Send "send" data to neighbours.
         for Iter_Index(it_state, 5) {
-          U32 state_offset = it_state * mesh->halos.len;
-          for Iter_Range(it_gather, lane_range(halo_len)) {
-            U32 cell_gather                                 = mesh->halos.cell_send[halo_range.min + it_gather];
-            euler->halo_send_dat[state_offset + it_gather]  = flow->states[it_state][cell_gather];
-          }
-        }
-
-        lane_barrier();
-
-        // NOTE(cmat): Send halo data from neighbours.
-        for Iter_Index(it_state, 5) {
-          U64 offset = it_state * mesh->halos.len + halo_range.min;
-          ipc_rank_send(sync_list, halo_len * sizeof(F32), euler->halo_send_dat + offset, it_rank, other_tag + it_state);
+          U64 offset = it_state * mesh->sends.len + send_range.min;
+          ipc_rank_send(sync_list, send_len * sizeof(F32), euler->halo_send_dat + offset, it_rank, other_tag + it_state);
         }
       }
     }
@@ -186,9 +198,12 @@ function F64 fl_solver_euler_solve_step(FL_Solver_Euler *euler, F32 CFL) {
   // NOTE(cmat): Compute time-step.
   F64 time_step = fl_solver_compute_time_step(euler);
 
+  log_info("%f", time_step);
+
+
   // NOTE(cmat): Synchronize minimum time_step across IPC ranks.
   time_step = ipc_rank_minimum(time_step);
-  
+
   // NOTE(cmat): Explicit-Euler integration.
   fl_solver_euler_step_explicit(euler, (F32)time_step);
   
@@ -206,10 +221,10 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
   // NOTE(cmat): Iterate.
   F64 time        = 0;
   F64 time_target = 0.001f;
-  for Iter_Index(it, 300) {
+  for Iter_Index(it, 100) {
     F64 time_step = fl_solver_euler_solve_step(euler, CFL);
     time         += time_step;
-    log_info("Time: %.2f | Tau: %.8f", time, time_step);
+    log_info("Time: %.2g | Tau: %.2g", time, time_step);
   }
 
   lane_barrier();

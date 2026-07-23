@@ -29,8 +29,15 @@ typedef struct UG_Halos {
   U64         len;
   U64         block_len;
   Range1_U64 *block_range;
-  U32        *cell_send;
+  U32        *cell_global;
 } UG_Halos;
+
+typedef struct UG_Sends {
+  U64         len;
+  U64         block_len;
+  Range1_U64 *block_range;
+  U32        *cell_send;
+} UG_Sends;
 
 typedef struct UG_Ghosts {
   U64  len;
@@ -43,6 +50,7 @@ typedef struct UG_Mesh {
   Range3_F32  bounds;
   UG_Cells    cells;
   UG_Halos    halos;
+  UG_Sends    sends;
   UG_Ghosts   ghosts;
 } UG_Mesh;
 
@@ -53,10 +61,9 @@ typedef struct UG_Mesh_Array {
 
 struct UG_Partition;
 
-function void     ug_mesh_init_from_grid        (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
-
-function void     ug_mesh_array_init            (UG_Mesh_Array *mesh_array, Arena *arena, U32 len);
-function void     ug_mesh_array_from_partition  (UG_Mesh_Array *mesh_array, UG_Mesh *global_mesh, struct UG_Partition *partition, Range1_U64 range, Arena *arena);
+function void     ug_mesh_init_from_grid              (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
+function void     ug_mesh_array_init                  (UG_Mesh_Array *mesh_array, Arena *arena, U32 len);
+function void     ug_mesh_array_from_partition        (UG_Mesh_Array *mesh_array, UG_Mesh *global_mesh, struct UG_Partition *partition, Range1_U64 range, Arena *arena);
 
 function void     ug_mesh_ipc_distribute        (UG_Mesh_Array *mesh_array);
 function void     ug_mesh_ipc_receive           (Arena *arena, UG_Mesh *mesh, U32 rank);

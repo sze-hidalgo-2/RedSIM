@@ -62,6 +62,12 @@ function void redsim_group_entry(void *user_data) {
       // - Allocated on scratch, since we'll free after distributing.
       ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
 
+      // NOTE(cmat): Compute cells to send between block for rank 0 mesh (permanent storage).
+      ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(0, 1), &permanent_arena);
+
+      // NOTE(cmat): Compute cellst to send between block for the other ranks (scratch storage).
+      ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
+
       // NOTE(cmat): Broadcast mesh array to all ranks.
       ug_mesh_ipc_distribute(&mesh_array);
 
@@ -117,9 +123,14 @@ link_function void redsim_entry_point(void) {
   log_ipc_context();      // NOTE(cmat): Log IPC context.
   log_sys_numa_layout();  // NOTE(cmat): Log NUMA layout.
 
-  U32           thread_count = sys_context()->cpu_logical_cores;
-  Thread_Group  thread_group = { };
+  U32 thread_count = 0;
+  if (sys_numa_layout()->nodes_len > 0) {
+    thread_count = sys_numa_layout()->nodes_dat[0].cpus_len;
+  } else {
+    thread_count = sys_context()->cpu_logical_cores;
+  }
 
+  Thread_Group thread_group = { };
   log_info("Launching global thread group with %u threads", thread_count);
 
   thread_group_init     (&thread_group, str08_lit("Sim_Group"), thread_count);
