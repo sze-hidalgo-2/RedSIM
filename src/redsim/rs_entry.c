@@ -10,9 +10,10 @@
 #include "ugrid_format/ugf_build.h"
 #include "ugrid_format/ugf_build.c"
 
-#if 0
 #include "fluid/fl_build.h"
 #include "fluid/fl_build.c"
+
+#if 0
 
 #include "fluid_format/flf_build.h"
 #include "fluid_format/flf_build.c"
@@ -40,7 +41,7 @@ function void redsim_group_entry(void *user_data) {
     Scratch_Scope(&scratch, 0) {
       // NOTE(cmat): Load grid from file.
       UG_Grid grid = { };
-      ugf_grid_init_from_su2(&grid, scratch.arena, str08_lit("cube_30M.su2"));
+      ugf_grid_init_from_su2(&grid, scratch.arena, str08_lit("cube_4M.su2"));
 
       // NOTE(cmat): Compute mesh based on grid: adjacency + geometry.
       UG_Mesh mesh_global = { };
@@ -55,7 +56,7 @@ function void redsim_group_entry(void *user_data) {
 
       // NOTE(cmat): Create sub-mesh for current rank
       // - Allocated on permanent, since we'll be using this one on this rank.
-      ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(0, 1), scratch.arena);
+      ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(0, 1), &permanent_arena);
 
       // NOTE(cmat): Create sub-mesh for each other rank.
       // - Allocated on scratch, since we'll free after distributing.
@@ -64,7 +65,7 @@ function void redsim_group_entry(void *user_data) {
       // NOTE(cmat): Broadcast mesh array to all ranks.
       ug_mesh_ipc_distribute(&mesh_array);
 
-      // NOTE(cmat): Assign our own mesh.
+      // NOTE(cmat): Assign our own mesh to rank 0.
       memory_copy(&mesh, mesh_array.dat, sizeof(UG_Mesh));
     }
   } else {
@@ -73,11 +74,27 @@ function void redsim_group_entry(void *user_data) {
 
   // NOTE(cmat): Wait until everyone has a mesh.
   ipc_rank_barrier();
-  // log_info("Mesh dispatch done!");
+ 
+  FL_Solver_Euler solver    = {};
+  FL_Boundary_Map boundary  = { };
   
+  // NOTE(cmat): Init boundary map.
+  fl_boundary_map_init(&boundary, &permanent_arena, 6);
+  if (lane_index() == 0) {
+    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+    *fl_boundary_map_by_index(&boundary, 3) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+    *fl_boundary_map_by_index(&boundary, 4) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+    *fl_boundary_map_by_index(&boundary, 5) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+  }
 
+  // NOTE(cmat): Init solver.
+  lane_barrier();
+  fl_solver_euler_init(&solver, &boundary, &mesh, &permanent_arena);
 
-  // NOTE(cmat): Allocate flow
+  // NOTE(cmat): Iterate and solve.
+  fl_solver_euler_solve(&solver);
 
   log_zone_end();
   profiler_end_function();

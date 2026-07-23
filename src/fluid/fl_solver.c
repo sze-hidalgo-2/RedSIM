@@ -1,17 +1,18 @@
-function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boundary, UG_Mesh *mesh) {
+function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boundary, UG_Mesh *mesh, Arena *arena) {
   Zero_Fill(euler);
-  arena_init(&euler->arena);
-  euler->mesh = mesh;
 
-  euler->boundary = boundary;
-  // TODO
-  // Assert(boundary->map_len >= mesh->markers.len, "Boundary Map not large enough for mesh");
-
-  fl_state_init(&euler->flow,     mesh);
-  fl_state_init(&euler->residual, mesh);
- 
+  euler->mesh                 = mesh;
+  euler->boundary             = boundary;
   euler->time_step_bucket_len = lane_count();
-  euler->time_step_bucket_dat = arena_push_count(&euler->arena, F64, euler->time_step_bucket_len);
+
+  fl_state_init(&euler->flow,     mesh, arena);
+  fl_state_init(&euler->residual, mesh, arena);
+
+  if (lane_index() == 0) {
+    euler->time_step_bucket_dat = arena_push_count(arena, F64, euler->time_step_bucket_len);
+  }
+
+  lane_broadcast_ptr(&euler->time_step_bucket_dat, 0);
 }
 
 function void fl_solver_compute_ghost(FL_Solver_Euler *euler) {

@@ -770,30 +770,32 @@ function void ug_mesh_array_from_partition(UG_Mesh_Array *mesh_array, UG_Mesh *g
 
 function void ug_mesh_ipc_distribute(UG_Mesh_Array *mesh_array) {
   profiler_begin_function();
-  IPC_Sync_List sync_list = { };
-  IPC_Sync_Scope(&sync_list) {
 
-    log_info("Distributing mesh array to %u ranks", mesh_array->len - 1);
-    for Iter_Index(it, (mesh_array->len - 1)) {
-      U32 rank      = it + 1;
-      UG_Mesh *mesh = mesh_array->dat + rank;
-      
-      // NOTE(cmat): Communicate lengths.
-      ipc_rank_send(&sync_list, sizeof(UG_Mesh), mesh, rank, 0);
-      
-      // NOTE(cmat): UG_Cells
-      ipc_rank_send(&sync_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
-      ipc_rank_send(&sync_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
-      ipc_rank_send(&sync_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
-      
-      // NOTE(cmat): UG_Halos
-      ipc_rank_send(&sync_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
-      ipc_rank_send(&sync_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_send,      rank, 0);
+  if (mesh_array->len > 1) {
+    IPC_Sync_List sync_list = { };
+    IPC_Sync_Scope(&sync_list) {
+      log_info("Distributing mesh array to %u ranks", mesh_array->len - 1);
+      for Iter_Index(it, (mesh_array->len - 1)) {
+        U32 rank      = it + 1;
+        UG_Mesh *mesh = mesh_array->dat + rank;
+        
+        // NOTE(cmat): Communicate lengths.
+        ipc_rank_send(&sync_list, sizeof(UG_Mesh), mesh, rank, 0);
+        
+        // NOTE(cmat): UG_Cells
+        ipc_rank_send(&sync_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
+        ipc_rank_send(&sync_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
+        ipc_rank_send(&sync_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
+        
+        // NOTE(cmat): UG_Halos
+        ipc_rank_send(&sync_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
+        ipc_rank_send(&sync_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_send,      rank, 0);
 
-      // NOTE(cmat): UG_Ghosts
-      ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.parent_cell,   rank, 0);
-      ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U08),             mesh->ghosts.parent_face,   rank, 0);
-      ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.marker_index,  rank, 0);
+        // NOTE(cmat): UG_Ghosts
+        ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.parent_cell,   rank, 0);
+        ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U08),             mesh->ghosts.parent_face,   rank, 0);
+        ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.marker_index,  rank, 0);
+      }
     }
   }
 

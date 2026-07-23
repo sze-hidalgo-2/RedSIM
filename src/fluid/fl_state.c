@@ -1,9 +1,13 @@
-function void fl_state_init(FL_State *fl, UG_Mesh *mesh) {
+function void fl_state_init(FL_State *fl, UG_Mesh *mesh, Arena *arena) {
   Zero_Fill(fl);
-  arena_init(&fl->arena);
 
-  U64  total_len   = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
-  F32 *total_dat   = arena_push_count(&fl->arena, F32, 5 * total_len);
+  U64  total_len = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
+  F32 *total_dat = 0;
+  if (lane_index() == 0) {
+    total_dat = arena_push_count(arena, F32, 5 * total_len);
+  }
+
+  lane_broadcast_ptr(&total_dat, 0);
 
   fl->gamma        = 1.4f;
   fl->gas_constant = 287.05f; // J / (kg * K)

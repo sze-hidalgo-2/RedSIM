@@ -1,6 +1,4 @@
 typedef struct FL_State {
-  Arena arena;
-
   F32   gamma;
   F32   gas_constant;
 
@@ -22,7 +20,7 @@ typedef struct FL_State {
 
 } FL_State;
 
-function void fl_state_init                     (FL_State *fl, UG_Mesh *mesh);
+function void fl_state_init                     (FL_State *fl, UG_Mesh *mesh, Arena *arena);
 function void fl_state_set                      (FL_State *fl, U64 at, V5F state);
 function V5F  fl_state_get                      (FL_State *fl, U64 at);
 function F32  fl_state_get_pressure             (FL_State *fl, U64 at);

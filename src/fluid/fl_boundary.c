@@ -1,14 +1,20 @@
-function void fl_boundary_map_init(FL_Boundary_Map *boundary, U64 len) {
+function void fl_boundary_map_init(FL_Boundary_Map *boundary, Arena *arena, U64 len) {
   Zero_Fill(boundary);
-  arena_init(&boundary->arena);
 
   boundary->map_len = len;
-  boundary->map_dat = arena_push_count(&boundary->arena, FL_Boundary, len);
+
+  if (lane_index() == 0) {
+    boundary->map_dat = arena_push_count(arena, FL_Boundary, len);
+  }
+  
+  lane_broadcast_ptr(&boundary->map_dat, 0);
 
   // NOTE(cmat): All boundaries are initialized to slip by default.
-  for Iter_Index(it, len) {
+  for Iter_Range(it, lane_range(len)) {
     boundary->map_dat[it] = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
   }
+
+  lane_barrier();
 }
 
 function FL_Boundary *fl_boundary_map_by_index(FL_Boundary_Map *boundary, U64 index) {

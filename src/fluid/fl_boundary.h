@@ -16,10 +16,9 @@ typedef struct FL_Boundary {
 } FL_Boundary;
 
 typedef struct FL_Boundary_Map {
-  Arena             arena;
   U64               map_len;
   FL_Boundary      *map_dat;
 } FL_Boundary_Map;
 
-function void         fl_boundary_map_init      (FL_Boundary_Map *boundary, U64 len);
+function void         fl_boundary_map_init      (FL_Boundary_Map *boundary, Arena *arena, U64 len);
 function FL_Boundary *fl_boundary_map_by_index  (FL_Boundary_Map *boundary, U64 index);
