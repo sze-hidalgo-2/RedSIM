@@ -41,7 +41,6 @@ typedef struct UG_Ghosts {
 
 typedef struct UG_Mesh {
   Range3_F32  bounds;
-  UG_Grid    *grid;
   UG_Cells    cells;
   UG_Halos    halos;
   UG_Ghosts   ghosts;
@@ -54,7 +53,13 @@ typedef struct UG_Mesh_Array {
 
 struct UG_Partition;
 
-function void ug_mesh_init_from_grid        (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
-function void ug_mesh_array_from_partition  (UG_Mesh_Array *mesh_array, UG_Mesh *global_mesh, struct UG_Partition *partition, Arena *arena);
-// function void ug_mesh_optimize_reorder    (UG_Mesh *mesh);
+function void     ug_mesh_init_from_grid        (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
+
+function void     ug_mesh_array_init            (UG_Mesh_Array *mesh_array, Arena *arena, U32 len);
+function void     ug_mesh_array_from_partition  (UG_Mesh_Array *mesh_array, UG_Mesh *global_mesh, struct UG_Partition *partition, Range1_U64 range, Arena *arena);
+
+function void     ug_mesh_ipc_distribute        (UG_Mesh_Array *mesh_array);
+function void     ug_mesh_ipc_receive           (Arena *arena, UG_Mesh *mesh, U32 rank);
+
+// function void     ug_mesh_optimize_reorder      (UG_Mesh *mesh);
 

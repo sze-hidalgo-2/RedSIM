@@ -1,7 +1,7 @@
 struct UG_Cell_Faces_Verts;
-function void ug_mesh_compute_cells                   (UG_Mesh *mesh, Arena *arena);
-function void ug_mesh_compute_cells_faces             (UG_Mesh *mesh, Arena *arena);
-function void ug_mesh_compute_cells_faces_ghosts      (UG_Mesh *mesh, struct UG_Cell_Faces_Verts *faces_verts);
+function void ug_mesh_compute_cells                   (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
+function void ug_mesh_compute_cells_faces             (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
+function void ug_mesh_compute_cells_faces_ghosts      (UG_Mesh *mesh, UG_Grid *grid, struct UG_Cell_Faces_Verts *faces_verts);
 
 // ------------------------------------------------------------
 // #-- Initialization
@@ -9,9 +9,8 @@ function void ug_mesh_compute_cells_faces_ghosts      (UG_Mesh *mesh, struct UG_
 function void ug_mesh_init_from_grid(UG_Mesh *mesh, UG_Grid *grid, Arena *arena) {
   profiler_begin_function();
   Log_Zone_Scope("Computing mesh from grid") {
-    mesh->grid = grid;
-    ug_mesh_compute_cells               (mesh, arena);  // NOTE(cmat): Compute cell geometric data.
-    ug_mesh_compute_cells_faces         (mesh, arena);  // NOTE(cmat): Compute cell adjacency.
+    ug_mesh_compute_cells               (mesh, grid, arena);  // NOTE(cmat): Compute cell geometric data.
+    ug_mesh_compute_cells_faces         (mesh, grid, arena);  // NOTE(cmat): Compute cell adjacency.
   }
 
   profiler_end_function();
@@ -20,13 +19,13 @@ function void ug_mesh_init_from_grid(UG_Mesh *mesh, UG_Grid *grid, Arena *arena)
 // ------------------------------------------------------------
 // #-- Compute Cells
 
-function void ug_mesh_compute_cells(UG_Mesh *mesh, Arena *arena) {
+function void ug_mesh_compute_cells(UG_Mesh *mesh, UG_Grid *grid, Arena *arena) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(arena);
   log_zone_start("Computing cells");
 
   Range3_F32 *bounds_global = 0;
-  mesh->cells.len           = mesh->grid->elems.len;
+  mesh->cells.len           = grid->elems.len;
 
   if (lane_index() == 0) {
     mesh->cells.center = arena_push_count(arena, V3F,    mesh->cells.len);
@@ -47,11 +46,11 @@ function void ug_mesh_compute_cells(UG_Mesh *mesh, Arena *arena) {
   for Iter_Range(it, lane_range(mesh->cells.len)) {
 
     // NOTE(cmat): Gather vectors.
-    V4U v    = mesh->grid->elems.verts[it];
-    V3F a    = v3f(mesh->grid->verts.x[v.x], mesh->grid->verts.y[v.x], mesh->grid->verts.z[v.x]);
-    V3F b    = v3f(mesh->grid->verts.x[v.y], mesh->grid->verts.y[v.y], mesh->grid->verts.z[v.y]);
-    V3F c    = v3f(mesh->grid->verts.x[v.z], mesh->grid->verts.y[v.z], mesh->grid->verts.z[v.z]);
-    V3F d    = v3f(mesh->grid->verts.x[v.w], mesh->grid->verts.y[v.w], mesh->grid->verts.z[v.w]);
+    V4U v    = grid->elems.verts[it];
+    V3F a    = v3f(grid->verts.x[v.x], grid->verts.y[v.x], grid->verts.z[v.x]);
+    V3F b    = v3f(grid->verts.x[v.y], grid->verts.y[v.y], grid->verts.z[v.y]);
+    V3F c    = v3f(grid->verts.x[v.z], grid->verts.y[v.z], grid->verts.z[v.z]);
+    V3F d    = v3f(grid->verts.x[v.w], grid->verts.y[v.w], grid->verts.z[v.w]);
 
     // NOTE(cmat): Compute center, volume and bounds.
     mesh->cells.center[it] = v3f_mul(.25f, v3f_add(a, v3f_add(b, v3f_add(c, d))));
@@ -121,7 +120,7 @@ force_inline function B32 ug_tetra_face_match(UG_Tetra_Face *lhs, UG_Tetra_Face 
   return match;
 }
 
-function void ug_mesh_compute_cells_faces(UG_Mesh *mesh, Arena *arena) {
+function void ug_mesh_compute_cells_faces(UG_Mesh *mesh, UG_Grid *grid, Arena *arena) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(arena);
   log_zone_start("Computing cell faces");
@@ -140,10 +139,10 @@ function void ug_mesh_compute_cells_faces(UG_Mesh *mesh, Arena *arena) {
 
   // NOTE(cmat): Add all faces.
   log_info("Sorting cell vertices");
-  for Iter_Range(it, lane_range(mesh->grid->elems.len)) {
+  for Iter_Range(it, lane_range(grid->elems.len)) {
     
     // NOTE(cmat): Sort grid vertices, so that each face is unique in its description.
-    V4U *cell = &mesh->grid->elems.verts[it];
+    V4U *cell = &grid->elems.verts[it];
     v4_u32_sort(cell);
 
     U64 face_index                = 4 * it;
@@ -271,9 +270,9 @@ function void ug_mesh_compute_cells_faces(UG_Mesh *mesh, Arena *arena) {
     U32 rhs_cell_index = 0;
 
     // NOTE(cmat): Compute face area and normal.
-    V3F x0    = v3f(mesh->grid->verts.x[verts.dat[0]], mesh->grid->verts.y[verts.dat[0]], mesh->grid->verts.z[verts.dat[0]]);
-    V3F x1    = v3f(mesh->grid->verts.x[verts.dat[1]], mesh->grid->verts.y[verts.dat[1]], mesh->grid->verts.z[verts.dat[1]]);
-    V3F x2    = v3f(mesh->grid->verts.x[verts.dat[2]], mesh->grid->verts.y[verts.dat[2]], mesh->grid->verts.z[verts.dat[2]]);
+    V3F x0    = v3f(grid->verts.x[verts.dat[0]], grid->verts.y[verts.dat[0]], grid->verts.z[verts.dat[0]]);
+    V3F x1    = v3f(grid->verts.x[verts.dat[1]], grid->verts.y[verts.dat[1]], grid->verts.z[verts.dat[1]]);
+    V3F x2    = v3f(grid->verts.x[verts.dat[2]], grid->verts.y[verts.dat[2]], grid->verts.z[verts.dat[2]]);
     V3F fc    = v3f_mul(1.f/3.f, v3f_add(x0, v3f_add(x1, x2)));
     V3F cc    = mesh->cells.center[lhs_cell_index];
     V3F x01   = v3f_sub(x1, x0);
@@ -325,7 +324,7 @@ function void ug_mesh_compute_cells_faces(UG_Mesh *mesh, Arena *arena) {
 
   // NOTE(cmat): Assign ghost cells.
   lane_barrier();
-  ug_mesh_compute_cells_faces_ghosts(mesh, faces_verts);
+  ug_mesh_compute_cells_faces_ghosts(mesh, grid, faces_verts);
 
   lane_barrier();
   log_zone_end();
@@ -349,7 +348,7 @@ force_inline function B32 ug_ghost_face_match(UG_Ghost_Face *lhs, UG_Ghost_Face 
   return match;
 }
 
-function void ug_mesh_compute_cells_faces_ghosts(UG_Mesh *mesh, UG_Cell_Faces_Verts *faces_verts) {
+function void ug_mesh_compute_cells_faces_ghosts(UG_Mesh *mesh, UG_Grid *grid, UG_Cell_Faces_Verts *faces_verts) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(0);
   log_zone_start("Assigning marks to ghost cells");
@@ -359,8 +358,8 @@ function void ug_mesh_compute_cells_faces_ghosts(UG_Mesh *mesh, UG_Cell_Faces_Ve
 
   if (lane_index() == 0) {
     U64 markers_len = 0;
-    for Iter_Index(it, mesh->grid->markers.len) {
-      markers_len += mesh->grid->markers.elems[it].len;
+    for Iter_Index(it, grid->markers.len) {
+      markers_len += grid->markers.elems[it].len;
     }
 
     ghost_faces_all_len = mesh->ghosts.len + markers_len;
@@ -383,12 +382,12 @@ function void ug_mesh_compute_cells_faces_ghosts(UG_Mesh *mesh, UG_Cell_Faces_Ve
 
   // NOTE(cmat): Add marker faces.
   log_info("Adding marker faces");
-  for Iter_Range(marker_it, lane_range(mesh->grid->markers.len)) {
-    UG_Grid_Marker_Elems *elems = &mesh->grid->markers.elems[marker_it];
+  for Iter_Range(marker_it, lane_range(grid->markers.len)) {
+    UG_Grid_Marker_Elems *elems = &grid->markers.elems[marker_it];
     U64 write_index             = mesh->ghosts.len;
 
     for Iter_Index(it, marker_it) {
-      write_index += mesh->grid->markers.elems[it].len;
+      write_index += grid->markers.elems[it].len;
     }
 
     for Iter_Index(elem_it, elems->len) {
@@ -452,8 +451,6 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(arena);
   log_zone_start("Computing sub-mesh for partition %u", block_index);
-
-  mesh->grid = 0; // TODO(cmat): Maybe necessary, but only for ensight export right now.
 
   UG_Partition_Block *block = &partition->blocks_dat[block_index];
   mesh->cells.len           = block->cells_len;
@@ -743,23 +740,103 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
   profiler_end_function();
 }
 
-function void ug_mesh_array_from_partition(UG_Mesh_Array *mesh_array, UG_Mesh *global_mesh, UG_Partition *partition, Arena *arena) {
-  profiler_begin_function();
-  log_zone_start("Constructing mesh partitions");
-
+function void ug_mesh_array_init(UG_Mesh_Array *mesh_array, Arena *arena, U32 len) {
   Zero_Fill(mesh_array);
-  mesh_array->len = partition->blocks_len;
 
+  mesh_array->len = len;
   if (lane_index() == 0) {
     mesh_array->dat = arena_push_count(arena, UG_Mesh, mesh_array->len);
   }
 
   lane_broadcast_ptr(&mesh_array->dat, 0);
+}
 
-  for Iter_Index(it, mesh_array->len) {
+function void ug_mesh_array_from_partition(UG_Mesh_Array *mesh_array, UG_Mesh *global_mesh, UG_Partition *partition, Range1_U64 partition_range, Arena *arena) {
+  profiler_begin_function();
+  log_zone_start("Constructing mesh array partitions for range [%'llu, %'llu)", partition_range.min, partition_range.max);
+
+  for Iter_Range(it, partition_range) {
+    Assert(it < mesh_array->len, "mesh array len overflow");
     ug_mesh_from_sub_mesh(&mesh_array->dat[it], global_mesh, partition, it, arena);
   }
 
+  lane_barrier();
   log_zone_end();
+  profiler_end_function();
+}
+
+// ------------------------------------------------------------
+// #-- IPC Commnuication
+
+function void ug_mesh_ipc_distribute(UG_Mesh_Array *mesh_array) {
+  profiler_begin_function();
+  IPC_Sync_List sync_list = { };
+  IPC_Sync_Scope(&sync_list) {
+
+    log_info("Distributing mesh array to %u ranks", mesh_array->len - 1);
+    for Iter_Index(it, (mesh_array->len - 1)) {
+      U32 rank      = it + 1;
+      UG_Mesh *mesh = mesh_array->dat + rank;
+      
+      // NOTE(cmat): Communicate lengths.
+      ipc_rank_send(&sync_list, sizeof(UG_Mesh), mesh, rank, 0);
+      
+      // NOTE(cmat): UG_Cells
+      ipc_rank_send(&sync_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
+      ipc_rank_send(&sync_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
+      ipc_rank_send(&sync_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
+      
+      // NOTE(cmat): UG_Halos
+      ipc_rank_send(&sync_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
+      ipc_rank_send(&sync_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_send,      rank, 0);
+
+      // NOTE(cmat): UG_Ghosts
+      ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.parent_cell,   rank, 0);
+      ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U08),             mesh->ghosts.parent_face,   rank, 0);
+      ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.marker_index,  rank, 0);
+    }
+  }
+
+  lane_barrier();
+  profiler_end_function();
+}
+
+function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
+  profiler_begin_function();
+  IPC_Sync_List sync_list = { };
+  IPC_Sync_Scope(&sync_list) {
+
+    // NOTE(cmat): Receive lengths, allocate.
+    ipc_rank_receive(&sync_list, sizeof(UG_Mesh), mesh, rank, 0);
+  }
+
+  mesh->cells.center        = arena_push_count(arena, V3F,            mesh->cells.len);
+  mesh->cells.volume        = arena_push_count(arena, F32,            mesh->cells.len);
+  mesh->cells.faces         = arena_push_count(arena, UG_Cell_Faces,  mesh->cells.len);
+
+  mesh->halos.block_range   = arena_push_count(arena, Range1_U64,     mesh->halos.block_len);
+  mesh->halos.cell_send     = arena_push_count(arena, U32,            mesh->halos.len);
+
+  mesh->ghosts.parent_cell  = arena_push_count(arena, U32,            mesh->ghosts.len);
+  mesh->ghosts.parent_face  = arena_push_count(arena, U08,            mesh->ghosts.len);
+  mesh->ghosts.marker_index = arena_push_count(arena, U32,            mesh->ghosts.len);
+
+  IPC_Sync_Scope(&sync_list) {
+    // NOTE(cmat): UG_Cells
+    ipc_rank_receive(&sync_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
+    ipc_rank_receive(&sync_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
+    ipc_rank_receive(&sync_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
+    
+    // NOTE(cmat): UG_Halos
+    ipc_rank_receive(&sync_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
+    ipc_rank_receive(&sync_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_send,      rank, 0);
+
+    // NOTE(cmat): UG_Ghosts
+    ipc_rank_receive(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.parent_cell,   rank, 0);
+    ipc_rank_receive(&sync_list, mesh->ghosts.len * sizeof(U08),             mesh->ghosts.parent_face,   rank, 0);
+    ipc_rank_receive(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.marker_index,  rank, 0);
+  }
+
+  lane_barrier();
   profiler_end_function();
 }

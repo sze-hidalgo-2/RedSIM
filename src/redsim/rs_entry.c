@@ -25,6 +25,12 @@ function void redsim_group_entry(void *user_data) {
   profiler_begin_function();
   log_zone_start("Thread Group Entry");
 
+  Arena permanent_arena = { };
+  Arena sync_arena      = { };
+
+  arena_init(&permanent_arena);
+  arena_init(&sync_arena);
+
   // NOTE(cmat): Load mesh on rank 0 and partition it (still multithreaded, just single rank).
   // NTOE(cmat): Once we've loaded the mesh on rank 0, distribute to other ranks and partition again
   // - on each rank for each thread group.
@@ -44,30 +50,34 @@ function void redsim_group_entry(void *user_data) {
       UG_Partition partition = { };
       ug_partition_rcb(&partition, scratch.arena, &mesh_global, ipc_rank_count());
 
-      // NOTE(cmat): Create sub-mesh for each rank.
-      UG_Mesh_Array mesh_local = { };
-      ug_mesh_array_from_partition(&mesh_local, &mesh_global, &partition, scratch.arena);
+      UG_Mesh_Array mesh_array = { };
+      ug_mesh_array_init(&mesh_array, scratch.arena, partition.blocks_len);
+
+      // NOTE(cmat): Create sub-mesh for current rank
+      // - Allocated on permanent, since we'll be using this one on this rank.
+      ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(0, 1), scratch.arena);
+
+      // NOTE(cmat): Create sub-mesh for each other rank.
+      // - Allocated on scratch, since we'll free after distributing.
+      ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
 
       // NOTE(cmat): Broadcast mesh array to all ranks.
-      if (ipc_rank_count() > 1) {
-        log_info("Broading casting mesh to %u ranks", ipc_rank_count() - 1);
-        for Iter_Index(it, ipc_rank_count() - 1) {
-#if 0
-          ug_mesh_ipc_send_async(&mesh_local.dat, it + 1);
-#endif
-        }
-      }
+      ug_mesh_ipc_distribute(&mesh_array);
+
+      // NOTE(cmat): Assign our own mesh.
+      memory_copy(&mesh, mesh_array.dat, sizeof(UG_Mesh));
     }
   } else {
-    // NOTE(cmat): Receive mesh.
-#if 0
-    IPC_Sync sync = ug_mesh_ipc_receive_async(&mesh, 0);
-    icp_wait(&sync);
-#endif
+    ug_mesh_ipc_receive(&permanent_arena, &mesh, 0);
   }
 
   // NOTE(cmat): Wait until everyone has a mesh.
   ipc_rank_barrier();
+  // log_info("Mesh dispatch done!");
+  
+
+
+  // NOTE(cmat): Allocate flow
 
   log_zone_end();
   profiler_end_function();
