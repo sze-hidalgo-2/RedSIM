@@ -895,7 +895,7 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
     mesh->ghosts.marker_index = arena_push_count(arena, U32,            mesh->ghosts.len);
   }
 
-  // NOTE(cmat): Synchronize mesh.
+  // NOTE(cmat): Synchronize ne
   lane_broadcast_type(mesh, 0);
 
   IPC_Sync_Scope(&sync_list) {

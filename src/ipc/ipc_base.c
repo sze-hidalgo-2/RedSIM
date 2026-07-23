@@ -68,8 +68,13 @@ function void ipc_init(void) {
                                     (char ***)&sys_context()->command_line.argv,
                                      MPI_THREAD_SERIALIZED, &provided_support);
 
-    printf("MPI_Init_thread error:            %d\n", mpi_error);
-    printf("MPI_Init_thread provided support: %d\n", provided_support);
+    if (mpi_error) {
+      sys_panic(str08_lit("MPI_Ini_thread error"));
+    }
+    
+    if (provided_support < 2) {
+      sys_panic(str08_lit("MPI_Init_thread does not support MPI_THREAD_SERIALIZED"));
+    }
     
     I32 rank_count = -1;
     MPI_Comm_size(MPI_COMM_WORLD, &rank_count);
@@ -96,6 +101,7 @@ function void ipc_rank_barrier(void) {
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
+  lane_barrier();
   profiler_end_function();
 }
 
