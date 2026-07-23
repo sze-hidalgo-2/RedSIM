@@ -675,8 +675,6 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
 
   // NOTE(cmat): Compute local starting halo index.
   U64 halo_unique_index = halo_unique_offset;
-
-  U64 halo_unique_begin = halo_total_range.min;
   if (halo_unique_begin > 0) {
     UG_Halo_Key *k1 = &halo_keys[halo_total_range.min - 1];
     UG_Halo_Key *k2 = &halo_keys[halo_total_range.min + 0];
