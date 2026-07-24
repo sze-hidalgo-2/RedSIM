@@ -20,8 +20,12 @@ Build with ``./build.sh [build-flags]``
 
 ### Optional Build Flags
 `release`: Fully optimized release build (full optimizations).
-`asan`: Enable address sanitization
-`no_debug`: Disable debug symbol generation
-`no_profile`: No profiling output
+
+`asan`: Enable address sanitization.
+
+`no_debug`: Disable debug symbol generation.
+
+`no_profile`: No profiling output.
+
 `fast_math`: Enable fast-math optimization. May break accuracy and stability.
 
