@@ -9,25 +9,27 @@ typedef struct IPC_Handle_List {
   IPC_Handle_Node *last;
 } IPC_Handle_List;
 
-typedef IPC_Handle_Node IPC_Sync_Node;
-typedef IPC_Handle_List IPC_Sync_List;
+typedef IPC_Handle_Node IPC_Request_Node;
+typedef IPC_Handle_List IPC_Request_List;
 
 // NOTE(cmat): Initialization, Shutdown.
 function void ipc_init        (void);
 function void ipc_shutdown    (void);
 
 // NOTE(cmat): Communication primitives.
-function U32      ipc_rank_index              (void);
-function U32      ipc_rank_count              (void);
-function void     ipc_rank_barrier            (void);
-function void     ipc_rank_sync_list_init     (IPC_Sync_List *sync_list);
-function void     ipc_rank_sync_list_consume  (IPC_Sync_List *sync_list);
-function void     ipc_rank_send               (IPC_Sync_List *sync_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag);
-function void     ipc_rank_receive            (IPC_Sync_List *sync_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag);
-function F64      ipc_rank_minimum            (F64 value);
+function U32      ipc_rank_index                (void);
+function U32      ipc_rank_count                (void);
+function void     ipc_rank_barrier              (void);
+function void     ipc_rank_request_list_init    (IPC_Request_List *request_list);
+function void     ipc_rank_request_list_destroy (IPC_Request_List *request_list);
+function void     ipc_rank_request_list_start   (IPC_Request_List *request_list);
+function void     ipc_rank_request_list_wait    (IPC_Request_List *request_list);
+function void     ipc_rank_record_send          (IPC_Request_List *request_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag);
+function void     ipc_rank_record_receive       (IPC_Request_List *request_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag);
+function F64      ipc_rank_minimum              (F64 value);
 
-#define IPC_Sync_Scope(sync_list_) \
-  Defer_Scope(ipc_rank_sync_list_init(sync_list_), ipc_rank_sync_list_consume(sync_list_))
+#define IPC_Request_Scope(request_list_) \
+  Defer_Scope(ipc_rank_request_list_start(request_list_), ipc_rank_request_list_wait(request_list_))
 
 // NOTE(cmat): Logging utilities.
-function void log_ipc_context   (void);
+function void log_ipc_context(void);

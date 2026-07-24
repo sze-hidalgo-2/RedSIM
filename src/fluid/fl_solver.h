@@ -4,9 +4,12 @@ typedef struct FL_Solver_Euler {
   FL_State            flow;
   FL_State            residual;
 
+  // NOTE(cmat): Time step buckets for reduction.
   U64                 time_step_bucket_len;
   F64                *time_step_bucket_dat;
 
+  // NOTE(cmat): Halo synchronization.
+  IPC_Request_List    halo_request_list;
   U64                 halo_send_len;
   F32                *halo_send_dat;
 } FL_Solver_Euler;

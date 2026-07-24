@@ -105,31 +105,39 @@ function void ipc_rank_barrier(void) {
   profiler_end_function();
 }
 
-function void ipc_rank_sync_list_init(IPC_Sync_List *sync_list) {
+function void ipc_rank_request_list_init(IPC_Request_List *request_list) {
   if (lane_index() == 0) {
-    Zero_Fill(sync_list);
+    Zero_Fill(request_list);
   }
+
+  lane_barrier();
 }
 
-function void ipc_rank_sync_list_consume(IPC_Sync_List *sync_list) {
+function void ipc_rank_request_list_destroy(IPC_Request_List *request_list) {
+  if (lane_index() == 0) {
+    for (IPC_Request_Node *it = request_list->first; it;) {
+      IPC_Request_Node *next = it->next;
+      ipc_mpi_handle_free(mpi_handle_from_ipc_handle(it));
+      it = next;
+    }
+  }
+
+  lane_barrier();
+}
+
+function void ipc_rank_request_list_start(IPC_Request_List *request_list) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(0);
 
   if (lane_index() == 0) {
-    MPI_Request *request_array  = arena_push_count(scratch.arena, MPI_Request, sync_list->count);
+    MPI_Request *request_array  = arena_push_count(scratch.arena, MPI_Request, request_list->count);
     U32 request_at              = 0;
 
-    for (IPC_Sync_Node *it = sync_list->first; it; it = it->next) {
+    for (IPC_Request_Node *it = request_list->first; it; it = it->next) {
       request_array[request_at++] = mpi_handle_from_ipc_handle(it)->value.request;
     }
 
-    MPI_Waitall((I32)sync_list->count, request_array, MPI_STATUSES_IGNORE);
-
-    for (IPC_Sync_Node *it = sync_list->first; it;) {
-      IPC_Sync_Node *next = it->next;
-      ipc_mpi_handle_free(mpi_handle_from_ipc_handle(it));
-      it = next;
-    }
+    MPI_Startall((I32)request_list->count, request_array);
   }
 
   lane_barrier();
@@ -137,39 +145,27 @@ function void ipc_rank_sync_list_consume(IPC_Sync_List *sync_list) {
   profiler_end_function();
 }
 
-function void ipc_rank_send(IPC_Sync_List *sync_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag) {
+function void ipc_rank_request_list_wait(IPC_Request_List *request_list) {
   profiler_begin_function();
+  Arena_Temp scratch = scratch_start(0);
 
   if (lane_index() == 0) {
-    U64 chunk_count     = bytes_len / (U64)i32_limit_max;
-    U64 chunk_remainder = bytes_len % (U64)i32_limit_max;
+    MPI_Request *request_array  = arena_push_count(scratch.arena, MPI_Request, request_list->count);
+    U32 request_at              = 0;
 
-    U08 *bytes_at = (U08 *)bytes_dat;
-    for Iter_Index(it, chunk_count) {
-      IPC_MPI_Handle_Node *mpi_handle = ipc_mpi_handle_allocate();
-      MPI_Isend(bytes_at, i32_limit_max, MPI_BYTE, (I32)rank, (I32)tag, MPI_COMM_WORLD, &mpi_handle->value.request);
-
-      IPC_Handle_Node *handle = ipc_handle_from_mpi_handle(mpi_handle);
-      Queue_Push(sync_list->first, sync_list->last, handle);
-      sync_list->count += 1;
-
-      bytes_at += i32_limit_max;
+    for (IPC_Request_Node *it = request_list->first; it; it = it->next) {
+      request_array[request_at++] = mpi_handle_from_ipc_handle(it)->value.request;
     }
-    
-    if (chunk_remainder) {
-      IPC_MPI_Handle_Node *mpi_handle = ipc_mpi_handle_allocate();
-      MPI_Isend(bytes_at, (I32)chunk_remainder, MPI_BYTE, (I32)rank, (I32)tag, MPI_COMM_WORLD, &mpi_handle->value.request);
 
-      IPC_Handle_Node *handle = ipc_handle_from_mpi_handle(mpi_handle);
-      Queue_Push(sync_list->first, sync_list->last, handle);
-      sync_list->count += 1;
-    }
+    MPI_Waitall((I32)request_list->count, request_array, MPI_STATUSES_IGNORE);
   }
 
+  lane_barrier();
+  scratch_end(&scratch);
   profiler_end_function();
 }
 
-function void ipc_rank_receive(IPC_Sync_List *sync_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag) {
+function void ipc_rank_record_send(IPC_Request_List *request_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag) {
   profiler_begin_function();
 
   if (lane_index() == 0) {
@@ -179,25 +175,59 @@ function void ipc_rank_receive(IPC_Sync_List *sync_list, U64 bytes_len, void *by
     U08 *bytes_at = (U08 *)bytes_dat;
     for Iter_Index(it, chunk_count) {
       IPC_MPI_Handle_Node *mpi_handle = ipc_mpi_handle_allocate();
-      MPI_Irecv(bytes_at, i32_limit_max, MPI_BYTE, (I32)rank, (I32)tag, MPI_COMM_WORLD, &mpi_handle->value.request);
+      MPI_Send_init(bytes_at, i32_limit_max, MPI_BYTE, (I32)rank, (I32)tag, MPI_COMM_WORLD, &mpi_handle->value.request);
 
       IPC_Handle_Node *handle = ipc_handle_from_mpi_handle(mpi_handle);
-      Queue_Push(sync_list->first, sync_list->last, handle);
-      sync_list->count += 1;
+      Queue_Push(request_list->first, request_list->last, handle);
+      request_list->count += 1;
 
       bytes_at += i32_limit_max;
     }
     
     if (chunk_remainder) {
       IPC_MPI_Handle_Node *mpi_handle = ipc_mpi_handle_allocate();
-      MPI_Irecv(bytes_at, (I32)chunk_remainder, MPI_BYTE, (I32)rank, (I32)tag, MPI_COMM_WORLD, &mpi_handle->value.request);
+      MPI_Send_init(bytes_at, (I32)chunk_remainder, MPI_BYTE, (I32)rank, (I32)tag, MPI_COMM_WORLD, &mpi_handle->value.request);
 
       IPC_Handle_Node *handle = ipc_handle_from_mpi_handle(mpi_handle);
-      Queue_Push(sync_list->first, sync_list->last, handle);
-      sync_list->count += 1;
+      Queue_Push(request_list->first, request_list->last, handle);
+      request_list->count += 1;
     }
   }
 
+  lane_barrier();
+  profiler_end_function();
+}
+
+function void ipc_rank_record_receive(IPC_Request_List *request_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag) {
+  profiler_begin_function();
+
+  if (lane_index() == 0) {
+    U64 chunk_count     = bytes_len / (U64)i32_limit_max;
+    U64 chunk_remainder = bytes_len % (U64)i32_limit_max;
+
+    U08 *bytes_at = (U08 *)bytes_dat;
+    for Iter_Index(it, chunk_count) {
+      IPC_MPI_Handle_Node *mpi_handle = ipc_mpi_handle_allocate();
+      MPI_Recv_init(bytes_at, i32_limit_max, MPI_BYTE, (I32)rank, (I32)tag, MPI_COMM_WORLD, &mpi_handle->value.request);
+
+      IPC_Handle_Node *handle = ipc_handle_from_mpi_handle(mpi_handle);
+      Queue_Push(request_list->first, request_list->last, handle);
+      request_list->count += 1;
+
+      bytes_at += i32_limit_max;
+    }
+    
+    if (chunk_remainder) {
+      IPC_MPI_Handle_Node *mpi_handle = ipc_mpi_handle_allocate();
+      MPI_Recv_init(bytes_at, (I32)chunk_remainder, MPI_BYTE, (I32)rank, (I32)tag, MPI_COMM_WORLD, &mpi_handle->value.request);
+
+      IPC_Handle_Node *handle = ipc_handle_from_mpi_handle(mpi_handle);
+      Queue_Push(request_list->first, request_list->last, handle);
+      request_list->count += 1;
+    }
+  }
+
+  lane_barrier();
   profiler_end_function();
 }
 

@@ -874,35 +874,41 @@ function void ug_mesh_ipc_distribute(UG_Mesh_Array *mesh_array) {
   profiler_begin_function();
 
   if (mesh_array->len > 1) {
-    IPC_Sync_List sync_list = { };
-    IPC_Sync_Scope(&sync_list) {
-      log_info("Distributing mesh array to %u ranks", mesh_array->len - 1);
-      for Iter_Index(it, (mesh_array->len - 1)) {
-        U32 rank      = it + 1;
-        UG_Mesh *mesh = mesh_array->dat + rank;
-        
-        // NOTE(cmat): Communicate lengths.
-        ipc_rank_send(&sync_list, sizeof(UG_Mesh), mesh, rank, 0);
-        
-        // NOTE(cmat): UG_Cells
-        ipc_rank_send(&sync_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
-        ipc_rank_send(&sync_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
-        ipc_rank_send(&sync_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
-        
-        // NOTE(cmat): UG_Halos
-        ipc_rank_send(&sync_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
-        ipc_rank_send(&sync_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_global,    rank, 0);
 
-        // NOTE(cmat): UG_Sends
-        ipc_rank_send(&sync_list, mesh->sends.block_len   * sizeof(Range1_U64), mesh->sends.block_range,    rank, 0);
-        ipc_rank_send(&sync_list, mesh->sends.len         * sizeof(U32),        mesh->sends.cell_send,      rank, 0);
+    IPC_Request_List request_list = { };
+    ipc_rank_request_list_init(&request_list);
 
-        // NOTE(cmat): UG_Ghosts
-        ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.parent_cell,   rank, 0);
-        ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U08),             mesh->ghosts.parent_face,   rank, 0);
-        ipc_rank_send(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.marker_index,  rank, 0);
-      }
+    for Iter_Index(it, (mesh_array->len - 1)) {
+      U32 rank      = it + 1;
+      UG_Mesh *mesh = mesh_array->dat + rank;
+      
+      // NOTE(cmat): Communicate lengths.
+      ipc_rank_record_send(&request_list, sizeof(UG_Mesh), mesh, rank, 0);
+      
+      // NOTE(cmat): UG_Cells
+      ipc_rank_record_send(&request_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
+      ipc_rank_record_send(&request_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
+      ipc_rank_record_send(&request_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
+      
+      // NOTE(cmat): UG_Halos
+      ipc_rank_record_send(&request_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
+      ipc_rank_record_send(&request_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_global,    rank, 0);
+
+      // NOTE(cmat): UG_Sends
+      ipc_rank_record_send(&request_list, mesh->sends.block_len   * sizeof(Range1_U64), mesh->sends.block_range,    rank, 0);
+      ipc_rank_record_send(&request_list, mesh->sends.len         * sizeof(U32),        mesh->sends.cell_send,      rank, 0);
+
+      // NOTE(cmat): UG_Ghosts
+      ipc_rank_record_send(&request_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.parent_cell,   rank, 0);
+      ipc_rank_record_send(&request_list, mesh->ghosts.len * sizeof(U08),             mesh->ghosts.parent_face,   rank, 0);
+      ipc_rank_record_send(&request_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.marker_index,  rank, 0);
     }
+
+    log_info("Distributing mesh array to %u ranks", mesh_array->len - 1);
+    ipc_rank_request_list_start (&request_list);
+    ipc_rank_request_list_wait  (&request_list);
+
+    ipc_rank_request_list_destroy(&request_list);
   }
 
   lane_barrier();
@@ -911,12 +917,15 @@ function void ug_mesh_ipc_distribute(UG_Mesh_Array *mesh_array) {
 
 function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
   profiler_begin_function();
-  IPC_Sync_List sync_list = { };
-  IPC_Sync_Scope(&sync_list) {
 
-    // NOTE(cmat): Receive lengths, allocate.
-    ipc_rank_receive(&sync_list, sizeof(UG_Mesh), mesh, rank, 0);
-  }
+  IPC_Request_List request_mesh_list = { };
+  ipc_rank_request_list_init    (&request_mesh_list);
+  ipc_rank_record_receive       (&request_mesh_list, sizeof (UG_Mesh), mesh, rank, 0);
+  ipc_rank_request_list_start   (&request_mesh_list);
+  ipc_rank_request_list_wait    (&request_mesh_list);
+  ipc_rank_request_list_destroy (&request_mesh_list);
+
+  // NOTE(cmat): Allocate data based on received sizes.
 
   // NOTE(cmat): UG_Cells
   if (lane_index() == 0) {
@@ -938,28 +947,32 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
     mesh->ghosts.marker_index = arena_push_count(arena, U32,            mesh->ghosts.len);
   }
 
-  // NOTE(cmat): Synchronize ne
   lane_broadcast_type(mesh, 0);
 
-  IPC_Sync_Scope(&sync_list) {
-    // NOTE(cmat): UG_Cells
-    ipc_rank_receive(&sync_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
-    ipc_rank_receive(&sync_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
-    ipc_rank_receive(&sync_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
-    
-    // NOTE(cmat): UG_Halos
-    ipc_rank_receive(&sync_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
-    ipc_rank_receive(&sync_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_global,    rank, 0);
+  IPC_Request_List request_data_list = { };
+  ipc_rank_request_list_init(&request_data_list);
 
-    // NOTE(cmat): UG_Sends
-    ipc_rank_receive(&sync_list, mesh->sends.block_len * sizeof(Range1_U64), mesh->sends.block_range,    rank, 0);
-    ipc_rank_receive(&sync_list, mesh->sends.len       * sizeof(U32),        mesh->sends.cell_send,      rank, 0);
+  // NOTE(cmat): UG_Cells
+  ipc_rank_record_receive(&request_data_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
+  ipc_rank_record_receive(&request_data_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
+  ipc_rank_record_receive(&request_data_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
+  
+  // NOTE(cmat): UG_Halos
+  ipc_rank_record_receive(&request_data_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
+  ipc_rank_record_receive(&request_data_list, mesh->halos.len       * sizeof(U32),        mesh->halos.cell_global,    rank, 0);
 
-    // NOTE(cmat): UG_Ghosts
-    ipc_rank_receive(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.parent_cell,   rank, 0);
-    ipc_rank_receive(&sync_list, mesh->ghosts.len * sizeof(U08),             mesh->ghosts.parent_face,   rank, 0);
-    ipc_rank_receive(&sync_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.marker_index,  rank, 0);
-  }
+  // NOTE(cmat): UG_Sends
+  ipc_rank_record_receive(&request_data_list, mesh->sends.block_len * sizeof(Range1_U64), mesh->sends.block_range,    rank, 0);
+  ipc_rank_record_receive(&request_data_list, mesh->sends.len       * sizeof(U32),        mesh->sends.cell_send,      rank, 0);
+
+  // NOTE(cmat): UG_Ghosts
+  ipc_rank_record_receive(&request_data_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.parent_cell,   rank, 0);
+  ipc_rank_record_receive(&request_data_list, mesh->ghosts.len * sizeof(U08),             mesh->ghosts.parent_face,   rank, 0);
+  ipc_rank_record_receive(&request_data_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.marker_index,  rank, 0);
+
+  ipc_rank_request_list_start   (&request_data_list);
+  ipc_rank_request_list_wait    (&request_data_list);
+  ipc_rank_request_list_destroy (&request_data_list);
 
   lane_barrier();
   profiler_end_function();
