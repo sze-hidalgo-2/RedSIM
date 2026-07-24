@@ -1,7 +1,8 @@
-- Partition, go back to buckets.
-- Fix partitioning code in mesh, check offset.
+- Packing variables.
+- MPI_Isend_init / MPI_Irecv_init
+- NUMA thread groups
 
-- Multiple thread groups, synchronization between them
-- logging to files, remove mutex from logger
-- BC lookup table
-- IC customizable function.
+- Mesh should own its own grid.
+- IPC Ensight Gold Export.
+- NUMA-based thread groups. Making sure to allocate on the right thread.
+- Config file.

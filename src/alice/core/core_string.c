@@ -196,7 +196,7 @@ function U08 scan_char(Scan *scan) {
   return result;
 }
 
-function void scan_move(Scan *scan, U32 offset) {
+function void scan_move(Scan *scan, U64 offset) {
   for Iter_Index(it, offset) {
     if (scan->at >= scan->stream.len) {
       break;

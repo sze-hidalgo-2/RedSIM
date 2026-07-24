@@ -63,9 +63,9 @@ typedef struct Scan_Error {
 typedef struct Scan {
     struct Arena   *arena;
     Str08           stream;
-    U32             at;
-    U32             line_at;
-    U32             char_at;
+    U64             at;
+    U64             line_at;
+    U64             char_at;
     Scan_Error     *error_first;
     Scan_Error     *error_last;
 } Scan;
@@ -74,7 +74,7 @@ function void        scan_init            (Scan *scan, struct Arena *arena, Str0
 function void        scan_error_push      (Scan *scan, Str08 message);
 function Scan_Error *scan_error           (Scan *scan);
 function U08         scan_char            (Scan *scan);
-function void        scan_move            (Scan *scan, U32 offset);
+function void        scan_move            (Scan *scan, U64 offset);
 function void        scan_skip_whitespace (Scan *scan);
 function void        scan_skip_line       (Scan *scan);
 function B32         scan_end             (Scan *scan);

@@ -48,7 +48,7 @@ function void ugf_su2_parse_block_NELEM(Arena *arena, Scan *scan, UG_Grid *ugrid
         ugrid->elems.verts[it] = v4u((U32)e1, (U32)e2, (U32)e3, (U32)e4);
 
       } else {
-        scan_error_push(scan, str08_lit("unsupported element type in element block"));
+        scan_error_push(scan, str08_lit("unsupported element type in element block!"));
       }
 
       if (scan_error(scan)) { break; }
