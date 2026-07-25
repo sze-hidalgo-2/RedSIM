@@ -130,9 +130,6 @@ function void ipc_rank_request_list_start(IPC_Request_List *request_list) {
   Arena_Temp scratch = scratch_start(0);
 
   if (lane_index() == 0) {
-    MPI_Request *request_array  = arena_push_count(scratch.arena, MPI_Request, request_list->count);
-    U32 request_at              = 0;
-
     for (IPC_Request_Node *it = request_list->first; it; it = it->next) {
       MPI_Start(&mpi_handle_from_ipc_handle(it)->value.request);
     }
