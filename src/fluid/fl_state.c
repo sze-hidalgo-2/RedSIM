@@ -25,6 +25,8 @@ function void fl_state_init(FL_State *fl, UG_Mesh *mesh, B32 store_ghost_halo, A
   fl->rho_v2       = total_dat + 2 * total_len;
   fl->rho_v3       = total_dat + 3 * total_len;
   fl->energy       = total_dat + 4 * total_len;
+
+  lane_barrier();
 }
 
 force_inline function V5F fl_state_get(FL_State *fl, U64 at) {
