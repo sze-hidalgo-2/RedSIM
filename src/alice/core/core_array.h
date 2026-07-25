@@ -11,7 +11,6 @@ function void array_reorder(U64 array_len, U64 type_size, U08 *array_dat, U64 ke
 // #-- Radix Sort
 
 // TODO(cmat): Change API to take sizes and offsets instead of multiples of U32's / U64's.
-function void array_sort_radix_f32(U64 array_len, U64 array_stride, U64 array_offset, F32 *array_dat);
 function void array_sort_radix_u32(U64 array_len, U64 array_stride, U64 array_offset, U32 *array_dat);
 function void array_sort_radix_u64(U64 array_len, U64 array_stride, U64 array_offset, U64 *array_dat);
 
