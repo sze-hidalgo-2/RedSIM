@@ -236,11 +236,17 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
   profiler_begin_function();
   log_zone_start("Solving euler flow");
 
+  F32 CFL = 0.85f;
+
+  // NOTE(cmat): 10 warmup iterations.
+  for Iter_Index(it, 10) {
+    fl_solver_euler_solve_step(euler, 0.f);
+  }
+
   // NOTE(cmat): Synchronize all ranks, for more accurate benchmarking.
   ipc_rank_barrier();
 
   U64 clock_start = sys_performance_clock_now();
-  F32 CFL         = 0.85f;
 
   // NOTE(cmat): Iterate.
   F64 time        = 0;

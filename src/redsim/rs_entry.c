@@ -140,8 +140,8 @@ link_function void redsim_entry_point(void) {
 
     U32 thread_count = 0;
     if (sys_numa_layout()->nodes_len > 0) {
-      // thread_count = sys_numa_layout()->nodes_dat[0].cpus_len;
-      thread_count = sys_context()->cpu_logical_cores;
+      // NOTE(cmat): We are launching thread groups / numa node!
+      thread_count = sys_numa_layout()->nodes_dat[sys_numa_layout()->node_launch].cpus_len;
     } else {
       thread_count = sys_context()->cpu_logical_cores;
     }

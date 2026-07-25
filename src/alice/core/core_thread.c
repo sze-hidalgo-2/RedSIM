@@ -65,8 +65,17 @@ function void *thread_group_entry_setup(void *user_data) {
 
   // NOTE(cmat): Bind to physical core.
   // TODO(cmat): We should be able to configure this. Especially for NUMA.
-  sys_thread_bind_to_cpu(info->group_index);
+  SYS_CPU bind_to_cpu = 0;
+  if (sys_numa_layout()->nodes_len > 0) {
+    SYS_NUMA_Node *numa_node  = &sys_numa_layout()->nodes_dat[sys_numa_layout()->node_launch];
+    bind_to_cpu               = numa_node->cpus_dat[info->group_index];
+  } else {
+    bind_to_cpu = info->group_index;
+  }
 
+  sys_thread_bind_to_cpu(bind_to_cpu);
+
+  // NOTE(cmat): Init thread context
   thread_context_init(info->group_barrier, info->group_storage, info->group_name, info->group_index, info->group_count);
   profiler_init_for_thread();
 
