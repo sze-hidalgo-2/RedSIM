@@ -86,12 +86,15 @@ function void redsim_group_entry(void *user_data) {
   }
 
   // NOTE(cmat): Wait until everyone has a mesh.
+  log_info("Meshes gathered");
   ipc_rank_barrier();
  
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
   
   // NOTE(cmat): Init boundary map.
+
+  log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
@@ -104,10 +107,13 @@ function void redsim_group_entry(void *user_data) {
 
   // NOTE(cmat): Init solver.
   lane_barrier();
+
+  log_info("Initializing solver");
   fl_solver_euler_init(&solver, &boundary, &mesh, &permanent_arena);
 
   // NOTE(cmat): Initial condition.
   lane_barrier();
+  log_info("Initializing SOD condition");
   fl_setup_sod(&solver.flow, &mesh);
 
   // NOTE(cmat): Iterate and solve.
