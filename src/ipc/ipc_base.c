@@ -134,10 +134,8 @@ function void ipc_rank_request_list_start(IPC_Request_List *request_list) {
     U32 request_at              = 0;
 
     for (IPC_Request_Node *it = request_list->first; it; it = it->next) {
-      request_array[request_at++] = mpi_handle_from_ipc_handle(it)->value.request;
+      MPI_Start(&mpi_handle_from_ipc_handle(it)->value.request);
     }
-
-    MPI_Startall((I32)request_list->count, request_array);
   }
 
   lane_barrier();
