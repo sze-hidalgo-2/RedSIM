@@ -104,7 +104,10 @@ force_inline function U32 ipc_rank_count (void) { return IPC_MPI_State.rank_coun
 function void ipc_rank_barrier(void) {
   profiler_begin_function();
   if (lane_index() == 0) {
-    MPI_Barrier(MPI_COMM_WORLD);
+
+    if (ipc_rank_count() > 1) {
+      MPI_Barrier(MPI_COMM_WORLD);
+    }
   }
 
   lane_barrier();
