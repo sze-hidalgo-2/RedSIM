@@ -1057,19 +1057,16 @@ function void ug_mesh_optimize_reorder(UG_Mesh *mesh) {
   }
 
   // NOTE(cmat): Remap ghost parents.
-  log_info("Remapping ghost parents");
   for Iter_Range(it, lane_range(mesh->ghosts.len)) {
     mesh->ghosts.parent_cell[it] = old_to_new[mesh->ghosts.parent_cell[it]];
   }
 
   // NOTE(cmat): Remap send cells
-  log_info("Remapping send cells");
   for Iter_Range(it, lane_range(mesh->sends.len)) {
     mesh->sends.cell_send[it] = old_to_new[mesh->sends.cell_send[it]];
   }
 
 
-  log_info("Reorder done");
   lane_barrier();
   log_zone_end();
   scratch_end(&scratch);
