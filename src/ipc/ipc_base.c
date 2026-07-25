@@ -31,7 +31,7 @@ function IPC_Handle_Node *ipc_handle_from_mpi_handle(IPC_MPI_Handle_Node *mpi_ha
 }
 
 function IPC_MPI_Handle_Node *mpi_handle_from_ipc_handle(IPC_Handle_Node *ipc_handle) {
-  IPC_MPI_Handle_Node *mpi_handle = (IPC_MPI_Handle_Node *)(void *)ipc_handle;;
+  IPC_MPI_Handle_Node *mpi_handle = (IPC_MPI_Handle_Node *)(void *)ipc_handle;
   return mpi_handle;
 }
 
@@ -83,7 +83,13 @@ function void ipc_init(void) {
     I32 rank_index = -1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_index);
     IPC_MPI_State.rank_index = (U32)rank_index;
+
+    // NOTE(cmat): Force an early collective, some UCX implementations
+    // - do some kind of lazy setup.
+    MPI_Barrier(MPI_COMM_WORLD);
   }
+
+  lane_barrier();
 }
 
 function void ipc_shutdown(void) {
