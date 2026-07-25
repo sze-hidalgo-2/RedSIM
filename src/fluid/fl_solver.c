@@ -236,6 +236,9 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
   profiler_begin_function();
   log_zone_start("Solving euler flow");
 
+  // NOTE(cmat): Synchronize all ranks, for more accurate benchmarking.
+  ipc_rank_barrier();
+
   U64 clock_start = sys_performance_clock_now();
   F32 CFL         = 0.85f;
 

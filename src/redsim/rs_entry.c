@@ -37,50 +37,53 @@ function void redsim_group_entry(void *user_data) {
   // - on each rank for each thread group.
   UG_Mesh mesh = { };
   if (ipc_rank_index() == 0) {
-    Arena_Temp scratch = { };
-    Scratch_Scope(&scratch, 0) {
-      // NOTE(cmat): Load grid from file.
-      UG_Grid grid = { };
+    Arena_Temp scratch = scratch_start(0);
 
-      Str08 su2_file = str08_from_cstring((char *)sys_context()->command_line.argv[1]);
-      ugf_grid_init_from_su2(&grid, scratch.arena, su2_file);
+    // NOTE(cmat): Load grid from file.
+    UG_Grid grid = { };
 
-      // NOTE(cmat): Compute mesh based on grid: adjacency + geometry.
-      UG_Mesh mesh_global = { };
-      ug_mesh_init_from_grid(&mesh_global, &grid, scratch.arena);
+    Str08 su2_file = str08_from_cstring((char *)sys_context()->command_line.argv[1]);
+    ugf_grid_init_from_su2(&grid, scratch.arena, su2_file);
 
-      // NOTE(cmat): Partition mesh by rank count.
-      UG_Partition partition = { };
-      ug_partition_rcb(&partition, scratch.arena, &mesh_global, ipc_rank_count());
+    // NOTE(cmat): Compute mesh based on grid: adjacency + geometry.
+    UG_Mesh mesh_global = { };
+    ug_mesh_init_from_grid(&mesh_global, &grid, scratch.arena);
 
-      UG_Mesh_Array mesh_array = { };
-      ug_mesh_array_init(&mesh_array, scratch.arena, partition.blocks_len);
+    // NOTE(cmat): Partition mesh by rank count.
+    UG_Partition partition = { };
+    ug_partition_rcb(&partition, scratch.arena, &mesh_global, ipc_rank_count());
 
-      // NOTE(cmat): Create sub-mesh for current rank
-      // - Allocated on permanent, since we'll be using this one on this rank.
-      ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(0, 1), &permanent_arena);
+    UG_Mesh_Array mesh_array = { };
+    ug_mesh_array_init(&mesh_array, scratch.arena, partition.blocks_len);
 
-      // NOTE(cmat): Create sub-mesh for each other rank.
-      // - Allocated on scratch, since we'll free after distributing.
-      ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
+    // NOTE(cmat): Create sub-mesh for current rank
+    // - Allocated on permanent, since we'll be using this one on this rank.
+    ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(0, 1), &permanent_arena);
 
-      // NOTE(cmat): Compute cells to send between block for rank 0 mesh (permanent storage).
-      ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(0, 1), &permanent_arena);
+    // NOTE(cmat): Create sub-mesh for each other rank.
+    // - Allocated on scratch, since we'll free after distributing.
+    ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
 
-      // NOTE(cmat): Compute cellst to send between block for the other ranks (scratch storage).
-      ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
+    // NOTE(cmat): Compute cells to send between block for rank 0 mesh (permanent storage).
+    ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(0, 1), &permanent_arena);
 
-      // NOTE(cmat): Reorder every mesh to improve cache locality.
-      for Iter_Index(it, mesh_array.len) {
-        ug_mesh_optimize_reorder(&mesh_array.dat[it]);
-      }
+    // NOTE(cmat): Compute cellst to send between block for the other ranks (scratch storage).
+    ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
 
-      // NOTE(cmat): Broadcast mesh array to all ranks.
-      ug_mesh_ipc_distribute(&mesh_array);
-
-      // NOTE(cmat): Assign our own mesh to rank 0.
-      mesh = mesh_array.dat[0];
+    // NOTE(cmat): Reorder every mesh to improve cache locality.
+    for Iter_Index(it, mesh_array.len) {
+      ug_mesh_optimize_reorder(&mesh_array.dat[it]);
     }
+
+    // NOTE(cmat): Broadcast mesh array to all ranks.
+    ug_mesh_ipc_distribute(&mesh_array);
+
+    // NOTE(cmat): Assign our own mesh to rank 0.
+    lane_barrier();
+    mesh = mesh_array.dat[0];
+
+    lane_barrier();
+    scratch_end(&scratch);
   } else {
     ug_mesh_ipc_receive(&permanent_arena, &mesh, 0);
   }
@@ -117,7 +120,6 @@ function void redsim_group_entry(void *user_data) {
 
   // NOTE(cmat): Synchronize all MPI ranks for more accurate
   // - benchmarking measurements for load balacing.
-  ipc_rank_barrier();
   fl_solver_euler_solve(&solver);
 
   log_zone_end();
