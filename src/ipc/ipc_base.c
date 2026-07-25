@@ -21,6 +21,12 @@ typedef struct IPC_MPI_Handle_List {
 global struct {
   U32                 rank_count;
   U32                 rank_index;
+
+  U32                 rank_local_node_count;
+  U32                 rank_local_node_index;
+
+  U32                 rank_global_node_count;
+
   Arena               arena;
   IPC_MPI_Handle_List handle_list;
   IPC_MPI_Handle_List handle_free_list;
@@ -84,8 +90,23 @@ function void ipc_init(void) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank_index);
     IPC_MPI_State.rank_index = (U32)rank_index;
 
-    // NOTE(cmat): Force an early collective, some UCX implementations
-    // - do some kind of lazy setup.
+    // NOTE(cmat): Build shared communicator.
+    MPI_Comm local_node_communicator = { };
+    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_node_communicator);
+
+    I32 rank_local_node_count = -1;
+    MPI_Comm_size(local_node_communicator, &rank_local_node_count);
+    IPC_MPI_State.rank_local_node_count = (U32)rank_local_node_count;
+
+    I32 rank_local_node_index = -1;
+    MPI_Comm_rank(local_node_communicator, &rank_local_node_index);
+    IPC_MPI_State.rank_local_node_index = (U32)rank_local_node_index;
+
+    // NOTE(cmat): Compute total node count.
+    // TODO(cmat): This assumes a heterogeneous architecture between nodes, for now.
+    IPC_MPI_State.rank_global_node_count = rank_count / rank_local_node_count;
+
+    // NOTE(cmat): Force an early collective communication, in case some implementations do some kind of lazy setup.
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
@@ -98,8 +119,11 @@ function void ipc_shutdown(void) {
   }
 }
 
-force_inline function U32 ipc_rank_index (void) { return IPC_MPI_State.rank_index; }
-force_inline function U32 ipc_rank_count (void) { return IPC_MPI_State.rank_count; }
+force_inline function U32 ipc_rank_index (void)             { return IPC_MPI_State.rank_index;              }
+force_inline function U32 ipc_rank_count (void)             { return IPC_MPI_State.rank_count;              }
+force_inline function U32 ipc_rank_local_node_index (void)  { return IPC_MPI_State.rank_local_node_index;   }
+force_inline function U32 ipc_rank_local_node_count (void)  { return IPC_MPI_State.rank_local_node_count;   }
+force_inline function U32 ipc_rank_global_node_count (void) { return IPC_MPI_State.rank_global_node_count;  }
 
 function void ipc_rank_barrier(void) {
   profiler_begin_function();
@@ -126,7 +150,9 @@ function void ipc_rank_request_list_destroy(IPC_Request_List *request_list) {
   if (lane_index() == 0) {
     for (IPC_Request_Node *it = request_list->first; it;) {
       IPC_Request_Node *next = it->next;
-      ipc_mpi_handle_free(mpi_handle_from_ipc_handle(it));
+      IPC_MPI_Handle_Node *mpi_handle = mpi_handle_from_ipc_handle(it);
+      MPI_Request_free(&mpi_handle->value.request);
+      ipc_mpi_handle_free(mpi_handle);
       it = next;
     }
   }
@@ -251,8 +277,11 @@ function F64 ipc_rank_minimum(F64 value) {
 
 function void log_ipc_context(void) {
   Log_Zone_Scope("IPC Context") {
-    log_info("Rank Count: %u", ipc_rank_count());
-    log_info("Rank Index: %u", ipc_rank_index());
+    log_info("Rank Count:            %u", ipc_rank_count());
+    log_info("Rank Index:            %u", ipc_rank_index());
+    log_info("Local Node Rank Count: %u", ipc_rank_local_node_count());
+    log_info("Local Node Rank Index: %u", ipc_rank_local_node_index());
+    log_info("Global Node Count:     %u", ipc_rank_global_node_count());
   }
 }
 

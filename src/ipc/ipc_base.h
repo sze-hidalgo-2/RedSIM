@@ -16,9 +16,17 @@ typedef IPC_Handle_List IPC_Request_List;
 function void ipc_init        (void);
 function void ipc_shutdown    (void);
 
-// NOTE(cmat): Communication primitives.
+// NOTE(cmat): Global Rank info.
 function U32      ipc_rank_index                (void);
 function U32      ipc_rank_count                (void);
+
+// NOTE(cmat): Node-local and node-global  Rank info. (NUMA index, NUMA count).
+function U32      ipc_rank_local_node_index     (void);
+function U32      ipc_rank_local_node_count     (void);
+
+function U32      ipc_rank_global_node_count    (void);
+
+// NOTE(cmat): Communication primitives.
 function void     ipc_rank_barrier              (void);
 function void     ipc_rank_request_list_init    (IPC_Request_List *request_list);
 function void     ipc_rank_request_list_destroy (IPC_Request_List *request_list);
