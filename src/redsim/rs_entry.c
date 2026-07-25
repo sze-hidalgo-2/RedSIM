@@ -85,10 +85,6 @@ function void redsim_group_entry(void *user_data) {
     ug_mesh_ipc_receive(&permanent_arena, &mesh, 0);
   }
 
-  // NOTE(cmat): Wait until everyone has a mesh.
-  log_info("Meshes gathered");
-  // ipc_rank_barrier();
- 
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
   
@@ -113,7 +109,7 @@ function void redsim_group_entry(void *user_data) {
 
   // NOTE(cmat): Initial condition.
   lane_barrier();
-  log_info("Initializing SOD condition");
+  log_info("Initializing flow to SOD condition");
   fl_setup_sod(&solver.flow, &mesh);
 
   // NOTE(cmat): Iterate and solve.
