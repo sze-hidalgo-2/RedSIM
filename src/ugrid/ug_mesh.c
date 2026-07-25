@@ -874,6 +874,7 @@ function void ug_mesh_ipc_distribute(UG_Mesh_Array *mesh_array) {
   profiler_begin_function();
 
   if (mesh_array->len > 1) {
+    log_info("Distributing mesh array to %u ranks", mesh_array->len - 1);
 
     IPC_Request_List request_list = { };
     ipc_rank_request_list_init(&request_list);
@@ -904,7 +905,6 @@ function void ug_mesh_ipc_distribute(UG_Mesh_Array *mesh_array) {
       ipc_rank_record_send(&request_list, mesh->ghosts.len * sizeof(U32),             mesh->ghosts.marker_index,  rank, 0);
     }
 
-    log_info("Distributing mesh array to %u ranks", mesh_array->len - 1);
     ipc_rank_request_list_start (&request_list);
     ipc_rank_request_list_wait  (&request_list);
 
@@ -1057,16 +1057,19 @@ function void ug_mesh_optimize_reorder(UG_Mesh *mesh) {
   }
 
   // NOTE(cmat): Remap ghost parents.
+  log_info("Remapping ghost parents");
   for Iter_Range(it, lane_range(mesh->ghosts.len)) {
     mesh->ghosts.parent_cell[it] = old_to_new[mesh->ghosts.parent_cell[it]];
   }
 
   // NOTE(cmat): Remap send cells
+  log_info("Remapping send cells");
   for Iter_Range(it, lane_range(mesh->sends.len)) {
     mesh->sends.cell_send[it] = old_to_new[mesh->sends.cell_send[it]];
   }
 
 
+  log_info("Reorder done");
   lane_barrier();
   log_zone_end();
   scratch_end(&scratch);

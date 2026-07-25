@@ -79,7 +79,7 @@ function void redsim_group_entry(void *user_data) {
       ug_mesh_ipc_distribute(&mesh_array);
 
       // NOTE(cmat): Assign our own mesh to rank 0.
-      memory_copy(&mesh, mesh_array.dat, sizeof(UG_Mesh));
+      mesh = mesh_array.dat[0];
     }
   } else {
     ug_mesh_ipc_receive(&permanent_arena, &mesh, 0);
