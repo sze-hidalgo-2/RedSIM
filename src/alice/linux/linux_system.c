@@ -140,13 +140,13 @@ link_function void sys_memory_commit(void *virtual_base, U64 bytes, SYS_Commit_F
   if (mode & SYS_Commit_Flag_Write)      prot |= PROT_WRITE;
   if (mode & SYS_Commit_Flag_Executable) prot |= PROT_EXEC;
   
-  if (mprotect(virtual_base, bytes, prot)) {
+  if (mprotect(virtual_base, bytes, prot) == -1) {
     sys_panic(str08_lit("virtual memory commit failed"));
   }
 }
 
 link_function void sys_memory_uncommit(void *virtual_base, U64 bytes) {
-  if (mprotect(virtual_base, bytes, PROT_NONE)) {
+  if (mprotect(virtual_base, bytes, PROT_NONE) == -1) {
     sys_panic(str08_lit("virtual memory uncommit failed"));
   }
 }
