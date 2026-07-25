@@ -1,7 +1,4 @@
-- Packing variables.
-- MPI_Isend_init / MPI_Irecv_init
 - NUMA thread groups
-
 - Mesh should own its own grid.
 - IPC Ensight Gold Export.
 - NUMA-based thread groups. Making sure to allocate on the right thread.

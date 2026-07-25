@@ -10,6 +10,8 @@ typedef struct FL_Solver_Euler {
 
   // NOTE(cmat): Halo synchronization.
   IPC_Request_List    halo_request_list;
+  U64                 halo_receive_len;
+  F32                *halo_receive_dat;
   U64                 halo_send_len;
   F32                *halo_send_dat;
 } FL_Solver_Euler;
