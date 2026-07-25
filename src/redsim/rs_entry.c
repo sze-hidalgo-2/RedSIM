@@ -87,7 +87,7 @@ function void redsim_group_entry(void *user_data) {
 
   // NOTE(cmat): Wait until everyone has a mesh.
   log_info("Meshes gathered");
-  ipc_rank_barrier();
+  // ipc_rank_barrier();
  
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
