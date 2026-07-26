@@ -454,10 +454,6 @@ function void linux_state_init_numa_layout(void) {
 
     numa_free_cpumask(cpu_mask);
   }
-
-  // NOTE(cmat): Get NUMA node we were launched on.
-  int cpu           = sched_getcpu();
-  numa->node_launch = (U64)numa_node_of_cpu(cpu);
 }
 
 function void linux_state_init(U32 argc, U08 **argv) {

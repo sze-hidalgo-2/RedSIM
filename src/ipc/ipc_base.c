@@ -179,7 +179,7 @@ function void ipc_rank_request_list_wait(IPC_Request_List *request_list) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(0);
 
-  if (lane_index() == 0) {
+  if (lane_index() == 0 && request_list->count) {
     MPI_Request *request_array  = arena_push_count(scratch.arena, MPI_Request, request_list->count);
     U32 request_at              = 0;
 

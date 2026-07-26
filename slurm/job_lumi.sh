@@ -1,7 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=redsim_mpi
-#SBATCH --nodes=1
-
 #SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=16
 
@@ -18,4 +16,4 @@ module load LUMI
 module load partition/C
 module load cpeGNU
 
-srun --cpu-bind=numa ./redsim_cpu "$1"
+srun --cpu-bind=none ./redsim_cpu "$1"

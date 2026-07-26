@@ -66,8 +66,8 @@ function void *thread_group_entry_setup(void *user_data) {
   // NOTE(cmat): Bind to physical core.
   // TODO(cmat): We should be able to configure this. Especially for NUMA.
   SYS_CPU bind_to_cpu = 0;
-  if (sys_numa_layout()->nodes_len > 0) {
-    SYS_NUMA_Node *numa_node  = &sys_numa_layout()->nodes_dat[sys_numa_layout()->node_launch];
+  if (sys_numa_layout()->nodes_len > 1) {
+    SYS_NUMA_Node *numa_node  = &sys_numa_layout()->nodes_dat[info->numa_index];
     bind_to_cpu               = numa_node->cpus_dat[info->group_index];
   } else {
     bind_to_cpu = info->group_index;
@@ -88,7 +88,7 @@ function void *thread_group_entry_setup(void *user_data) {
   return 0;
 }
 
-function void thread_group_launch(Thread_Group *thread_group, Thread_Group_Entry *user_entry, void *user_data) {
+function void thread_group_launch(Thread_Group *thread_group, Thread_Group_Entry *user_entry, U64 numa_index, void *user_data) {
   for Iter_Index(it, thread_group->group_count) {
     thread_group->group_infos[it] = (Thread_Group_Info) {
       .group_barrier = thread_group->group_barrier,
@@ -96,6 +96,7 @@ function void thread_group_launch(Thread_Group *thread_group, Thread_Group_Entry
       .group_index   = it,
       .group_count   = thread_group->group_count,
       .group_storage = &thread_group->group_storage,
+      .numa_index    = numa_index,
       .user_entry    = user_entry,
       .user_data     = user_data,
     };

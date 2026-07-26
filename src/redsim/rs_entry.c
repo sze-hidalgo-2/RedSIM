@@ -147,9 +147,10 @@ link_function void redsim_entry_point(void) {
     log_sys_numa_layout();  // NOTE(cmat): Log NUMA layout.
 
     U32 thread_count = 0;
-    if (sys_numa_layout()->nodes_len > 0) {
+    if (sys_numa_layout()->nodes_len > 1) {
       // NOTE(cmat): We are launching thread groups / numa node!
-      thread_count = sys_numa_layout()->nodes_dat[sys_numa_layout()->node_launch].cpus_len;
+      U64 numa_index = ipc_rank_local_node_index();
+      thread_count = sys_numa_layout()->nodes_dat[numa_index].cpus_len;
     } else {
       thread_count = sys_context()->cpu_logical_cores;
     }
@@ -158,7 +159,13 @@ link_function void redsim_entry_point(void) {
     log_info("Launching global thread group with %u threads", thread_count);
 
     thread_group_init     (&thread_group, str08_lit("Sim_Group"), thread_count);
-    thread_group_launch   (&thread_group, redsim_group_entry, 0);
+
+    U64 numa_index = 0;
+    if (sys_numa_layout()->nodes_len > 1) {
+      numa_index = ipc_rank_local_node_index();
+    }
+
+    thread_group_launch   (&thread_group, redsim_group_entry, numa_index, 0);
     thread_group_wait_all (&thread_group);
     thread_group_destroy  (&thread_group);
   }
@@ -170,6 +177,19 @@ link_function void sys_entry_point(void) {
   // NOTE(cmat): Initialize IPC communication first.
   ipc_init();
 
+  // NOTE(cmat): Bind main thread to appropriate NUMA node and cpu within that node.
+  SYS_CPU bind_to_cpu = 0;
+  if (sys_numa_layout()->nodes_len > 1) {
+    U64 numa_index            = ipc_rank_local_node_index();
+    SYS_NUMA_Node *numa_node  = &sys_numa_layout()->nodes_dat[numa_index];
+    bind_to_cpu               = numa_node->cpus_dat[0];
+  } else {
+    bind_to_cpu = 0;
+  }
+
+  sys_thread_bind_to_cpu(bind_to_cpu);
+
+  // NOTE(cmat): Initialize profiler, logger.
   if (ipc_rank_index() == 0) {
     // NOTE(cmat): We only profile for rank 0.
     // - Even though we only profile a single rank, we can still see

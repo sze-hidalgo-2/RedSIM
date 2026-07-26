@@ -204,7 +204,6 @@ function void log_sys_numa_layout(void) {
   SYS_NUMA_Layout *numa = sys_numa_layout();
 
   Log_Zone_Scope("NUMA Layout - Nodes: %llu", numa->nodes_len) {
-    log_info("Launched on NUMA node: %llu", numa->node_launch);
     for Iter_Index(node_it, numa->nodes_len) {
       Log_Zone_Scope("Node-ID: %llu - CPU Count: %llu", node_it, numa->nodes_dat[node_it].cpus_len) {
         for Iter_Index(cpu_it, numa->nodes_dat[node_it].cpus_len) {

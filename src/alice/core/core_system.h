@@ -24,7 +24,6 @@ typedef struct SYS_NUMA_Node {
 } SYS_NUMA_Node;
 
 typedef struct SYS_NUMA_Layout {
-  U64             node_launch;
   U64             nodes_len;
   SYS_NUMA_Node  *nodes_dat;
 } SYS_NUMA_Layout;

@@ -48,6 +48,7 @@ typedef struct Thread_Group_Info {
   U32                 group_index;
   U32                 group_count;
   U64                *group_storage;
+  U64                 numa_index;
   Thread_Group_Entry *user_entry;
   void               *user_data;
 } Thread_Group_Info;
@@ -64,7 +65,7 @@ typedef struct Thread_Group {
 
 function void thread_group_init       (Thread_Group *thread_group, Str08 group_name, U32 group_count);
 function void thread_group_destroy    (Thread_Group *thread_group);
-function void thread_group_launch     (Thread_Group *thread_group, Thread_Group_Entry *user_entry, void *user_data);
+function void thread_group_launch     (Thread_Group *thread_group, Thread_Group_Entry *user_entry, U64 numa_index, void *user_data);
 function void thread_group_wait_all   (Thread_Group *thread_group);
 
 // ------------------------------------------------------------
