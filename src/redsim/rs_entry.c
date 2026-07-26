@@ -67,12 +67,20 @@ function void redsim_group_entry(void *user_data) {
     // NOTE(cmat): Compute cells to send between block for rank 0 mesh (permanent storage).
     ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(0, 1), &permanent_arena);
 
-    // NOTE(cmat): Compute cellst to send between block for the other ranks (scratch storage).
+    // NOTE(cmat): Compute cells to send between block for the other ranks (scratch storage).
     ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
 
-    // NOTE(cmat): Reorder every mesh to improve cache locality.
+    // NOTE(cmat): Reoder cells by groups: Interior or boundary. [ interior cells | boundary cells ]
+    // - This allows us to compute interior cells while waiting for halo cells to be distributed,
+    // - needed only by boundary cells.
     for Iter_Index(it, mesh_array.len) {
-      ug_mesh_optimize_reorder(&mesh_array.dat[it]);
+      ug_mesh_reorder_by_groups(&mesh_array.dat[it]);
+    }
+
+    // NOTE(cmat): Reorder every group in the mesh to improve cache locality.
+    for Iter_Index(it, mesh_array.len) {
+      ug_mesh_optimize_reorder(&mesh_array.dat[it], mesh_array.dat[it].groups.cells_interior);
+      ug_mesh_optimize_reorder(&mesh_array.dat[it], mesh_array.dat[it].groups.cells_boundary);
     }
 
     // NOTE(cmat): Broadcast mesh array to all ranks.

@@ -120,17 +120,17 @@ function void fl_solver_compute_ghost(FL_Solver_Euler *euler) {
   profiler_end_function();
 }
 
-function void fl_solver_compute_residual(FL_Solver_Euler *euler, F32 CFL) {
+function void fl_solver_compute_residual(FL_Solver_Euler *euler, F32 CFL, Range1_U64 range) {
   profiler_begin_function();
+  U64 range_len = range1_u64_len(range);
 
   UG_Mesh  *mesh     = euler->mesh;
   FL_State *flow     = &euler->flow;
   FL_State *residual = &euler->residual;
 
-  U64 bucket_index                          = lane_index();
-  euler->time_step_bucket_dat[bucket_index] = f64_limit_max;
-
-  for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
+  U64 bucket_index = lane_index();
+  for Iter_Range(it_range, lane_range(range_len)) {
+    U64 it_cell       = range.min + it_range;
     V5F cell_residual = v5f(0, 0, 0, 0, 0);
     V5F left_state    = v5f(flow->rho[it_cell], flow->rho_v1[it_cell], flow->rho_v2[it_cell], flow->rho_v3[it_cell], flow->energy[it_cell]);
 
@@ -202,22 +202,31 @@ function void fl_solver_euler_step_explicit(FL_Solver_Euler *euler, F32 time_ste
 
 function F64 fl_solver_euler_solve_step(FL_Solver_Euler *euler, F32 CFL) {
   profiler_begin_function();
+  UG_Mesh  *mesh = euler->mesh;
+
+  // NOTE(cmat): Set time-step to maximal value.
+  euler->time_step_bucket_dat[lane_index()] = f64_limit_max;
 
   // NOTE(cmat): Pack cells for halo exchange.
   fl_solver_euler_halo_pack_send_data(euler);
 
-  // NOTE(cmat): Exchange halo cells between IPC ranks.
+  // NOTE(cmat): Start halo cell exchange between IPC ranks.
   IPC_Request_Scope(&euler->halo_request_list) {
     // NOTE(cmat): While we are waiting for the halo cells to arrive from,
     // - other ranks, we compute the ghost cells to save time.
     fl_solver_compute_ghost(euler);
-  }
+
+    // NOTE(cmat): Next we compute the residual of all interior cells.
+    // - Those are cells not touching any halo cells; they can still be in touch with ghost cells.
+    fl_solver_compute_residual(euler, CFL, mesh->groups.cells_interior);
+
+  } // NOTE(cmat): Wait for halo cells to be exchanged.
 
   // NOTE(cmat): Unpack received halo data.
   fl_solver_euler_halo_unpack_receive_data(euler);
 
-  // NOTE(cmat): Compute cell residuals.
-  fl_solver_compute_residual(euler, CFL);
+  // NOTE(cmat): Compute residual for remaining boundary cells
+  fl_solver_compute_residual(euler, CFL, mesh->groups.cells_boundary);
 
   // NOTE(cmat): Compute time-step.
   F64 time_step = fl_solver_compute_time_step(euler);
@@ -236,8 +245,6 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
   profiler_begin_function();
   log_zone_start("Solving euler flow");
 
-  F32 CFL = 0.85f;
-
   // NOTE(cmat): 10 warmup iterations.
   for Iter_Index(it, 10) {
     fl_solver_euler_solve_step(euler, 0.f);
@@ -246,6 +253,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
   // NOTE(cmat): Synchronize all ranks, for more accurate benchmarking.
   ipc_rank_barrier();
 
+  F32 CFL = 0.85f;
   U64 clock_start = sys_performance_clock_now();
 
   // NOTE(cmat): Iterate.

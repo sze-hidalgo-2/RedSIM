@@ -46,12 +46,18 @@ typedef struct UG_Ghosts {
   U32 *marker_index;
 } UG_Ghosts;
 
+typedef struct UG_Groups {
+  Range1_U64 cells_interior;
+  Range1_U64 cells_boundary;
+} UG_Groups;
+
 typedef struct UG_Mesh {
-  Range3_F32  bounds;
-  UG_Cells    cells;
-  UG_Halos    halos;
-  UG_Sends    sends;
-  UG_Ghosts   ghosts;
+  Range3_F32    bounds;
+  UG_Cells      cells;
+  UG_Halos      halos;
+  UG_Sends      sends;
+  UG_Ghosts     ghosts;
+  UG_Groups     groups;
 } UG_Mesh;
 
 typedef struct UG_Mesh_Array {
@@ -62,7 +68,8 @@ typedef struct UG_Mesh_Array {
 struct UG_Partition;
 
 function void     ug_mesh_init_from_grid              (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
-function void     ug_mesh_optimize_reorder            (UG_Mesh *mesh);
+function void     ug_mesh_optimize_reorder            (UG_Mesh *mesh, Range1_U64 range);
+function void     ug_mesh_reorder_by_groups           (UG_Mesh *mesh);
 
 function void     ug_mesh_array_init                  (UG_Mesh_Array *mesh_array, Arena *arena, U32 len);
 function void     ug_mesh_array_from_partition        (UG_Mesh_Array *mesh_array, UG_Mesh *global_mesh, struct UG_Partition *partition, Range1_U64 range, Arena *arena);

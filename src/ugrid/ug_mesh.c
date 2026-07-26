@@ -989,25 +989,26 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
 // NOTE(cmat): The only tricky part here is that we have to make sure that the indices referred
 // - to in the mesh (adjacent, etc.) are also remapped.
 
-function void ug_mesh_optimize_reorder(UG_Mesh *mesh) {
+function void ug_mesh_optimize_reorder(UG_Mesh *mesh, Range1_U64 range) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(0);
-  log_zone_start("Reodering cells");
+  U64 range_len = range1_u64_len(range);
+  log_info("Reodering cells in range: [%'llu, %'llu)", range.min, range.max);
 
   // NOTE(cmat): Compute morton codes for each cell center
-  log_info("Computing morton codes");
 
   // NOTE(cmat): Data layout: [ morton code | local cell index ]
   V2_U64 *morton_codes = 0;
   if (lane_index() == 0) {
-    morton_codes = arena_push_count(scratch.arena, V2_U64, mesh->cells.len);
+    morton_codes = arena_push_count(scratch.arena, V2_U64, range_len);
   }
 
   lane_broadcast_ptr(&morton_codes, 0);
 
   V3F bounds_len_rcp = v3f_rcp(range3_f32_len(mesh->bounds));
-  for Iter_Range(it, lane_range(mesh->cells.len)) {
-    V3F center_normed = v3f_had(v3f_sub(mesh->cells.center[it], mesh->bounds.min), bounds_len_rcp);
+  for Iter_Range(it, lane_range(range_len)) {
+    U32 it_cell = range.min + it;
+    V3F center_normed = v3f_had(v3f_sub(mesh->cells.center[it_cell], mesh->bounds.min), bounds_len_rcp);
 
     V2_U64 *entry = morton_codes + it;
     entry->x      = morton64_encode_v3f(center_normed);
@@ -1016,8 +1017,7 @@ function void ug_mesh_optimize_reorder(UG_Mesh *mesh) {
 
   // NOTE(cmat): Sort morton codes.
   lane_barrier();
-  log_info("Sorting cells by morton code");
-  array_sort_radix_u64(mesh->cells.len, 2, 0, (U64 *)morton_codes);
+  array_sort_radix_u64(range_len, 2, 0, (U64 *)morton_codes);
 
   // NOTE(cmat): Compute old index -> new index map
   lane_barrier();
@@ -1029,22 +1029,26 @@ function void ug_mesh_optimize_reorder(UG_Mesh *mesh) {
 
   lane_broadcast_ptr(&old_to_new, 0);
 
+  // NOTE(cmat): Original indexing.
   for Iter_Range(it, lane_range(mesh->cells.len)) {
-    U32 old = (U32)morton_codes[it].y;
-    old_to_new[old] = it;
+    old_to_new[it] = (U32)it;
+  }
+
+  // NOTE(cmat): Patch with new ordering.
+  lane_barrier();
+  for Iter_Range(it, lane_range(range_len)) {
+    U64 old_local = morton_codes[it].y;
+    old_to_new[range.min + old_local] = (U32)(range.min + it);
   }
 
   // NOTE(cmat): Reorder elements.
   lane_barrier();
-  log_info("Reodering elements");
-  array_reorder(mesh->cells.len,  sizeof(V3F),           (U08 *)mesh->cells.center,       sizeof(V2_U64), &morton_codes->y);
-  array_reorder(mesh->cells.len,  sizeof(F32),           (U08 *)mesh->cells.volume,       sizeof(V2_U64), &morton_codes->y);
-  array_reorder(mesh->cells.len,  sizeof(UG_Cell_Faces), (U08 *)mesh->cells.faces,        sizeof(V2_U64), &morton_codes->y);
-
+  array_reorder(range_len,  sizeof(V3F),           (U08 *)(mesh->cells.center + range.min), sizeof(V2_U64), &morton_codes->y);
+  array_reorder(range_len,  sizeof(F32),           (U08 *)(mesh->cells.volume + range.min), sizeof(V2_U64), &morton_codes->y);
+  array_reorder(range_len,  sizeof(UG_Cell_Faces), (U08 *)(mesh->cells.faces  + range.min), sizeof(V2_U64), &morton_codes->y);
 
   // NOTE(cmat): Remap adjacent cells (only inner ones).
   lane_barrier();
-  log_info("Reindexing elements");
   for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
     for Iter_Index(it_face, 4) {
       U32  old_adjacent =  mesh->cells.faces[it_cell].adjacent[it_face];
@@ -1066,9 +1070,148 @@ function void ug_mesh_optimize_reorder(UG_Mesh *mesh) {
     mesh->sends.cell_send[it] = old_to_new[mesh->sends.cell_send[it]];
   }
 
-
   lane_barrier();
-  log_zone_end();
   scratch_end(&scratch);
   profiler_end_function();
 }
+
+// ------------------------------------------------------------
+// #-- Grouping optimization
+
+// NOTE(cmat): We group cells by classifying interior and boundary cells.
+// - This allows us to start solving the flux for the innermost cells,
+// - while waiting for the halo cells to be exchanged.
+
+function void ug_mesh_reorder_by_groups(UG_Mesh *mesh) {
+  profiler_begin_function();
+  Arena_Temp scratch = scratch_start(0);
+  log_info("Reordering by groups");
+
+  // NOTE(cmat): Count boundary cells (cells touching halos).
+  U64 *boundary_count_global  = 0;
+  U64 *lane_cell_count_global = 0;
+  B08 *is_boundary            = 0;
+
+  if (lane_index() == 0) {
+    boundary_count_global   = arena_push_count(scratch.arena, U64, lane_count());
+    lane_cell_count_global  = arena_push_count(scratch.arena, U64, lane_count());
+    is_boundary             = arena_push_count(scratch.arena, B08, mesh->cells.len);
+  }
+
+  lane_broadcast_ptr(&boundary_count_global,  0);
+  lane_broadcast_ptr(&lane_cell_count_global, 0);
+  lane_broadcast_ptr(&is_boundary,            0);
+
+  lane_cell_count_global[lane_index()] = range1_u64_len(lane_range(mesh->cells.len));
+
+  for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
+    B32 boundary_cell = 0;
+    for Iter_Index(it_face, 4) {
+      U32 adjacent = mesh->cells.faces[it_cell].adjacent[it_face];
+      if (adjacent >= mesh->cells.len && adjacent < mesh->cells.len + mesh->halos.len) {
+        boundary_cell = 1;
+        break;
+      }
+    }
+
+    is_boundary[it_cell] = boundary_cell;
+    if (boundary_cell) {
+      boundary_count_global[lane_index()] += 1;
+    }
+  }
+
+  // NOTE(cmat): Gather counts.
+  lane_barrier();
+  U64 boundary_count = 0;
+  if (lane_index() == 0) {
+    for Iter_Index(it, lane_count()) {
+      boundary_count += boundary_count_global[it];
+    }
+  }
+
+  lane_broadcast_u64(&boundary_count, 0);
+
+  // NOTE(cmat): We now have the interior and boundary ranges.
+  U64 interior_count = mesh->cells.len - boundary_count;
+  mesh->groups.cells_interior = range1_u64(0,               interior_count);
+  mesh->groups.cells_boundary = range1_u64(interior_count,  mesh->cells.len);
+
+  // NOTE(cmat): Prefix sum for lane offsets.
+  lane_barrier();
+  U64 boundary_offset = 0;
+  U64 interior_offset = 0;
+  for Iter_Index(it, lane_index()) {
+    boundary_offset += boundary_count_global[it];
+    interior_offset += lane_cell_count_global[it] - boundary_count_global[it];
+  }
+
+  // NOTE(cmat): old -> new cell index map.
+  U64 *old_to_new = 0;
+  if (lane_index() == 0) {
+    old_to_new = arena_push_count(scratch.arena, U64, mesh->cells.len);
+  }
+
+  lane_broadcast_ptr(&old_to_new, 0);
+
+  // NOTE(cmat): Fill old to new index map.
+  U64 boundary_at = interior_count + boundary_offset;
+  U64 interior_at = interior_offset;
+  for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
+    if (is_boundary[it_cell]) {
+      old_to_new[it_cell] = (U32)(boundary_at++);
+    } else {
+      old_to_new[it_cell] = (U32)(interior_at++);
+    }
+  }
+
+  // NOTE(cmat): Now we invert the map to new -> old.
+  lane_barrier();
+
+  U64 *new_to_old = 0;
+  if (lane_index() == 0) {
+    new_to_old = arena_push_count(scratch.arena, U64, mesh->cells.len);
+  }
+
+  lane_broadcast_ptr(&new_to_old, 0);
+
+  // NOTE(cmat): Fill new to old index map.
+  for Iter_Range(it, lane_range(mesh->cells.len)) {
+    new_to_old[old_to_new[it]] = (U32)it;
+  }
+
+  lane_barrier();
+
+  // NOTE(cmat): Reorder elements.
+  lane_barrier();
+  array_reorder(mesh->cells.len,  sizeof(V3F),           (U08 *)(mesh->cells.center), sizeof(U64), new_to_old);
+  array_reorder(mesh->cells.len,  sizeof(F32),           (U08 *)(mesh->cells.volume), sizeof(U64), new_to_old);
+  array_reorder(mesh->cells.len,  sizeof(UG_Cell_Faces), (U08 *)(mesh->cells.faces),  sizeof(U64), new_to_old);
+
+  // NOTE(cmat): Remap adjacent cells (only inner ones).
+  lane_barrier();
+  for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
+    for Iter_Index(it_face, 4) {
+      U32  old_adjacent =  mesh->cells.faces[it_cell].adjacent[it_face];
+      U32 *new_adjacent = &mesh->cells.faces[it_cell].adjacent[it_face];
+
+      if (old_adjacent < mesh->cells.len) {
+        *new_adjacent = old_to_new[old_adjacent];
+      }
+    }
+  }
+
+  // NOTE(cmat): Remap ghost parents.
+  for Iter_Range(it, lane_range(mesh->ghosts.len)) {
+    mesh->ghosts.parent_cell[it] = old_to_new[mesh->ghosts.parent_cell[it]];
+  }
+
+  // NOTE(cmat): Remap send cells
+  for Iter_Range(it, lane_range(mesh->sends.len)) {
+    mesh->sends.cell_send[it] = old_to_new[mesh->sends.cell_send[it]];
+  }
+
+  lane_barrier();
+  scratch_end(&scratch);
+  profiler_end_function();
+}
+

@@ -1,10 +1,9 @@
 # RedSIM: A 3D Finite-Volume HPC Solver CFD Solver
 
 RedSIM is a Finite-Volume HPC Solver, for 3D tetrahedral meshes, meant
-for HPC-scale simulations. It leverages MPI and pthreads, with manual NUMA-node managment,
-thus significantly minimizing the number of MPI ranks and communication needed between
-them. The code was developed by Matyas Constans, the mathematical models and algorithms
-developed by Zoltan Horvath.
+for HPC-scale simulations. It leverages MPI and pthreads significantly minimizing the number of
+MPI ranks and communication needed between them.
+The code was developed by Matyas Constans, the mathematical models and algorithms developed by Zoltan Horvath.
 
 It was built on top of the [ALICE Engine](https://github.com/matt-const/alice) for efficient
 memory managment with arenas, threading (within and outside of NUMA nodes), SIMD, and arena allocations.

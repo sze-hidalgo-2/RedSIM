@@ -13,8 +13,8 @@ typedef IPC_Handle_Node IPC_Request_Node;
 typedef IPC_Handle_List IPC_Request_List;
 
 // NOTE(cmat): Initialization, Shutdown.
-function void ipc_init        (void);
-function void ipc_shutdown    (void);
+function void     ipc_init        (void);
+function void     ipc_shutdown    (void);
 
 // NOTE(cmat): Global Rank info.
 function U32      ipc_rank_index                (void);
