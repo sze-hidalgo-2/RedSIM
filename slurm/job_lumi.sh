@@ -1,7 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=redsim_mpi
 #SBATCH --ntasks-per-node=8
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=16
+#SBATCH --hint=nomultithread
 #SBATCH --exclusive
 
 #SBATCH --account=project_465002685
