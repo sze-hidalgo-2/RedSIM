@@ -7,7 +7,7 @@ typedef struct UG_Partition_RCB_Key {
 
 Assert_Compiler(sizeof(UG_Partition_RCB_Key) == 4 * sizeof(U32));
 
-function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Range3_F32 bounds, U32 partition_begin, U32 partition_count, Range1_U64 range, UG_Partition_RCB_Key *rcb_keys) {
+function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Range3_F32 bounds, U32 partition_begin, U32 partition_count, Range1_U64 range, UG_Partition_RCB_Key *rcb_keys, U32 depth) {
   profiler_begin_function();
   U64 range_len = range1_u64_len(range);
 
@@ -37,7 +37,11 @@ function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Rang
 
   } else {
     U32 split_axis = 0;
+#if 0
     range3_f32_largest_axis (bounds, &split_axis);
+#else
+    split_axis = depth % 3;
+#endif
     array_sort_radix_u32    (range_len, sizeof(UG_Partition_RCB_Key) / sizeof(U32), split_axis, (U32 *)(rcb_keys + range.min));
 
     U32 left_partition_count  = partition_count / 2;
@@ -55,8 +59,8 @@ function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Rang
 
     bounds_left.max.dat   [split_axis] = center.dat[split_axis];
     bounds_right.min.dat  [split_axis] = center.dat[split_axis];
-    ug_partition_rcb_split(partition, arena, bounds_left,  partition_begin,                         left_partition_count,  range1_u64(range.min,    center_index), rcb_keys);
-    ug_partition_rcb_split(partition, arena, bounds_right, partition_begin + left_partition_count,  right_partition_count, range1_u64(center_index, range.max),    rcb_keys);
+    ug_partition_rcb_split(partition, arena, bounds_left,  partition_begin,                         left_partition_count,  range1_u64(range.min,    center_index), rcb_keys, depth + 1);
+    ug_partition_rcb_split(partition, arena, bounds_right, partition_begin + left_partition_count,  right_partition_count, range1_u64(center_index, range.max),    rcb_keys, depth + 1);
   }
 
   profiler_end_function();
@@ -96,7 +100,7 @@ function void ug_partition_rcb(UG_Partition *partition, Arena *arena, UG_Mesh *m
   lane_broadcast_ptr(&partition->blocks_dat,          0);
   lane_broadcast_ptr(&partition->cells_block_index,   0);
   lane_broadcast_ptr(&partition->cells_local_index,   0);
-  ug_partition_rcb_split(partition, arena, bounds, 0, partition_count, range1_u64(0, mesh->cells.len), rcb_keys);
+  ug_partition_rcb_split(partition, arena, bounds, 0, partition_count, range1_u64(0, mesh->cells.len), rcb_keys, 0);
 
   lane_barrier();
 

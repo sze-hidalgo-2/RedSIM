@@ -57,15 +57,8 @@ function void ug_mesh_compute_cells(UG_Mesh *mesh, UG_Grid *grid, Arena *arena) 
     mesh->cells.volume[it] = f32_abs(v3f_dot(v3f_sub(a, d), v3f_cross(v3f_sub(b, d), v3f_sub(c, d))) / 6.f);
 
     for Iter_Index(elem, 3) {
-      bounds_local->min.dat[elem] = f32_min(bounds_local->min.dat[elem], a.dat[elem]);
-      bounds_local->min.dat[elem] = f32_min(bounds_local->min.dat[elem], b.dat[elem]);
-      bounds_local->min.dat[elem] = f32_min(bounds_local->min.dat[elem], c.dat[elem]);
-      bounds_local->min.dat[elem] = f32_min(bounds_local->min.dat[elem], d.dat[elem]);
-
-      bounds_local->max.dat[elem] = f32_max(bounds_local->max.dat[elem], a.dat[elem]);
-      bounds_local->max.dat[elem] = f32_max(bounds_local->max.dat[elem], b.dat[elem]);
-      bounds_local->max.dat[elem] = f32_max(bounds_local->max.dat[elem], c.dat[elem]);
-      bounds_local->max.dat[elem] = f32_max(bounds_local->max.dat[elem], d.dat[elem]);
+      bounds_local->min.dat[elem] = f32_min(bounds_local->min.dat[elem], mesh->cells.center[it].dat[elem]);
+      bounds_local->max.dat[elem] = f32_max(bounds_local->max.dat[elem], mesh->cells.center[it].dat[elem]);
     }
   }
 
