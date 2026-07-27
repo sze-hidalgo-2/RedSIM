@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include <pthread.h>
 #include <numa.h>
+#include <sched.h>
 
 #include <x86intrin.h>
 #include <immintrin.h>
@@ -423,18 +424,24 @@ function void linux_state_init_context(U32 argc, U08 **argv) {
 function void linux_state_init_numa_layout(void) {
   SYS_NUMA_Layout *numa = &Linux_State.numa_layout;
   if (numa_available() >= 0) {
+
+    // NOTE(cmat): Filter out SMT siblings based on scheduler info.
+    cpu_set_t allowed_set;
+    CPU_ZERO(&allowed_set);
+    sched_getaffinity(0, sizeof(cpu_set_t), &allowed_set);
+
     numa->nodes_len = numa_max_node() + 1;
     numa->nodes_dat = arena_push_count(&Linux_State.arena, SYS_NUMA_Node, numa->nodes_len);
 
     struct bitmask *cpu_mask = numa_allocate_cpumask();
     for Iter_Index(it_node, numa->nodes_len) {
-
       // NOTE(cmat): Get cpu-s corresponding to current node.
       if (numa_node_to_cpus(it_node, cpu_mask) == 0) {
+
         // NOTE(cmat): Count CPU-s
         U64 cpu_count = 0;
         for Iter_Index(it_cpu, cpu_mask->size) {
-          if (numa_bitmask_isbitset(cpu_mask, it_cpu)) {
+          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && CPU_ISSET((int)it_cpu, &allowed_set)) {
             cpu_count += 1;
           }
         }
@@ -445,7 +452,7 @@ function void linux_state_init_numa_layout(void) {
 
         U64 cpu_at = 0;
         for Iter_Index(it_cpu, cpu_mask->size) {
-          if (numa_bitmask_isbitset(cpu_mask, it_cpu)) {
+          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && CPU_ISSET((int)it_cpu, &allowed_set)) {
             numa->nodes_dat[it_node].cpus_dat[cpu_at++] = it_cpu;
           }
         }

@@ -177,6 +177,11 @@ link_function void sys_entry_point(void) {
   // NOTE(cmat): Initialize IPC communication first.
   ipc_init();
 
+  // NOTE(cmat): Check if RedSIM was launched correctly.
+  if (sys_numa_layout()->nodes_len > 1 && ipc_rank_local_node_count() != sys_numa_layout()->nodes_len) {
+    sys_panic(str08_lit("Rank count per compute node does not match NUMA domain count."));
+  }
+
   // NOTE(cmat): Bind main thread to appropriate NUMA node and cpu within that node.
   SYS_CPU bind_to_cpu = 0;
   if (sys_numa_layout()->nodes_len > 1) {
