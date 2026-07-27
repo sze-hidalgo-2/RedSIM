@@ -46,11 +46,17 @@ if [[ -n ${release-} ]]; then
   echo "release: yes"
   compiler_flags+=" -O3 -flto"
   linker_flags+=" -flto"
-  define_flags+=" -DBUILD_ASSERT=0"
 else
   echo "release: no"
   compiler_flags+=" -O0"
-  define_flags+=" -DBUILD_ASSERT=1"
+fi
+
+if [[ -n ${no_assert-} ]]; then
+echo "asserts: no"
+  define_flags+=" -DBUILD_ASSERT=0"
+else
+echo "asserts: yes"
+define_flags+=" -DBUILD_ASSERT=1"
 fi
 
 if [[ -n ${asan-} ]]; then
