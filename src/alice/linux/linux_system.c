@@ -421,14 +421,44 @@ function void linux_state_init_context(U32 argc, U08 **argv) {
   context->mmu_page_bytes = (U64)sysconf(_SC_PAGESIZE); 
 }
 
+// NOTE(cmat): Returns true if cpu_id is NOT the lowest-numbered logical CPU
+// - in its thread-sibling group — i.e. it's an SMT sibling we should skip
+// - so each physical core is represented exactly once.
+// TODO(cmat): Switch away from the CRT, use the OS layer.
+function B32 linux_cpu_is_smt_sibling_duplicate(U64 cpu_id) {
+  char path[128];
+  snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%llu/topology/thread_siblings_list", (unsigned long long)cpu_id);
+
+  FILE *f = fopen(path, "r");
+  if (!f) { return false; } // NOTE(cmat): Can't determine siblings — fail safe, don't exclude.
+
+  char line[256];
+  U64 lowest = cpu_id;
+  if (fgets(line, sizeof(line), f)) {
+    char *tok = strtok(line, ",");
+    while (tok) {
+      U64 lo = 0, hi = 0;
+      if (sscanf(tok, "%llu-%llu", (unsigned long long*)&lo, (unsigned long long*)&hi) == 2) {
+        if (lo < lowest) lowest = lo;
+      } else if (sscanf(tok, "%llu", (unsigned long long*)&lo) == 1) {
+        if (lo < lowest) lowest = lo;
+      }
+      tok = strtok(0, ",");
+    }
+  }
+  fclose(f);
+
+  return (lowest != cpu_id);
+}
+
 function void linux_state_init_numa_layout(void) {
   SYS_NUMA_Layout *numa = &Linux_State.numa_layout;
   if (numa_available() >= 0) {
 
     // NOTE(cmat): Filter out SMT siblings based on scheduler info.
-    cpu_set_t allowed_set;
-    CPU_ZERO(&allowed_set);
-    sched_getaffinity(0, sizeof(cpu_set_t), &allowed_set);
+    // cpu_set_t allowed_set;
+    // CPU_ZERO(&allowed_set);
+    // sched_getaffinity(0, sizeof(cpu_set_t), &allowed_set);
 
     numa->nodes_len = numa_max_node() + 1;
     numa->nodes_dat = arena_push_count(&Linux_State.arena, SYS_NUMA_Node, numa->nodes_len);
@@ -441,7 +471,7 @@ function void linux_state_init_numa_layout(void) {
         // NOTE(cmat): Count CPU-s
         U64 cpu_count = 0;
         for Iter_Index(it_cpu, cpu_mask->size) {
-          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && CPU_ISSET((int)it_cpu, &allowed_set)) {
+          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && !linux_cpu_is_smt_sibling_duplicate(it_cpu)) {
             cpu_count += 1;
           }
         }
@@ -452,7 +482,7 @@ function void linux_state_init_numa_layout(void) {
 
         U64 cpu_at = 0;
         for Iter_Index(it_cpu, cpu_mask->size) {
-          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && CPU_ISSET((int)it_cpu, &allowed_set)) {
+          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && !linux_cpu_is_smt_sibling_duplicate(it_cpu)) {
             numa->nodes_dat[it_node].cpus_dat[cpu_at++] = it_cpu;
           }
         }
