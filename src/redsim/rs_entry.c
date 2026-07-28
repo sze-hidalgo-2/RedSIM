@@ -51,7 +51,7 @@ function void redsim_group_entry(void *user_data) {
 
     // NOTE(cmat): Partition mesh by rank count.
     UG_Partition partition = { };
-    ug_partition_zoltan_rcb(&partition, scratch.arena, &mesh_global, ipc_rank_count());
+    ug_partition_rcb(&partition, scratch.arena, &mesh_global, ipc_rank_count());
 
     UG_Mesh_Array mesh_array = { };
     ug_mesh_array_init(&mesh_array, scratch.arena, partition.blocks_len);
