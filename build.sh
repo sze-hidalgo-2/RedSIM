@@ -99,7 +99,7 @@ compiler_flags+=" -std=c99"
 linker_flags+=" -lnuma -lpthread -lm"
 
 # NOTE(cmat): Statically link thirdparty dependencies.
-linker_flags+=" $(realpath ./build/libzoltan.a)"
+# linker_flags+=" $(realpath ./build/libzoltan.a)"
 
 linker_flags+=" -o redsim_cpu"
 

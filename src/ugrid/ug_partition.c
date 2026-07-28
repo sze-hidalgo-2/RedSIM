@@ -36,6 +36,8 @@ function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Rang
     lane_barrier();
 
   } else {
+
+#if 0
     U32 split_axis = 0;
     range3_f32_largest_axis (bounds, &split_axis);
 
@@ -51,7 +53,9 @@ function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Rang
         split_axis = depth % 3;
       }
     }
-
+#else
+    U32 split_axis = depth % 3;
+#endif
 
     array_sort_radix_u32    (range_len, sizeof(UG_Partition_RCB_Key) / sizeof(U32), split_axis, (U32 *)(rcb_keys + range.min));
 
