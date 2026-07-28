@@ -37,28 +37,37 @@ function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Rang
 
   } else {
     U32 split_axis = 0;
-#if 0
     range3_f32_largest_axis (bounds, &split_axis);
-#else
-    split_axis = depth % 3;
-#endif
+
+    // NOTE(cmat): Stability guard for near cubic boxes. If relative gap is less than 1%, we switch back to cyclic.
+    {
+      V3F extent = v3f_sub(bounds.max, bounds.min);
+      F32 sorted[3] = { extent.x, extent.y, extent.z };
+      if (sorted[0] < sorted[1]) { F32 t = sorted[0]; sorted[0] = sorted[1]; sorted[1] = t; }
+      if (sorted[1] < sorted[2]) { F32 t = sorted[1]; sorted[1] = sorted[2]; sorted[2] = t; }
+      if (sorted[0] < sorted[1]) { F32 t = sorted[0]; sorted[0] = sorted[1]; sorted[1] = t; }
+      F32 relative_gap = (sorted[0] - sorted[1]) / f32_max(sorted[0], 1e-6f);
+      if (relative_gap < 0.01f) {
+        split_axis = depth % 3;
+      }
+    }
+
+
     array_sort_radix_u32    (range_len, sizeof(UG_Partition_RCB_Key) / sizeof(U32), split_axis, (U32 *)(rcb_keys + range.min));
 
     U32 left_partition_count  = partition_count / 2;
     U32 right_partition_count = partition_count - left_partition_count;
 
     // NOTE(cmat): Find weighted center.
-    U64 center_index  = range.min + (range_len * left_partition_count) / partition_count;
-    V3U center_key    = rcb_keys[center_index].center;
-    V3F center        = v3f(f32_from_radix_key(center_key.x), f32_from_radix_key(center_key.y), f32_from_radix_key(center_key.z));
-
-    // log_info("Split at axis %u: %.2g", split_axis, center.dat[split_axis]);
+    U64 center_index = range.min + (range_len * left_partition_count) / partition_count;
+    V3U center_key   = rcb_keys[center_index].center;
+    F32 split_coord  = 0.5f * (bounds.min.dat[split_axis] + bounds.max.dat[split_axis]);
 
     Range3_F32 bounds_left = bounds;
     Range3_F32 bounds_right = bounds;
 
-    bounds_left.max.dat   [split_axis] = center.dat[split_axis];
-    bounds_right.min.dat  [split_axis] = center.dat[split_axis];
+    bounds_left.max.dat   [split_axis] = split_coord;
+    bounds_right.min.dat  [split_axis] = split_coord;
     ug_partition_rcb_split(partition, arena, bounds_left,  partition_begin,                         left_partition_count,  range1_u64(range.min,    center_index), rcb_keys, depth + 1);
     ug_partition_rcb_split(partition, arena, bounds_right, partition_begin + left_partition_count,  right_partition_count, range1_u64(center_index, range.max),    rcb_keys, depth + 1);
   }
@@ -108,3 +117,4 @@ function void ug_partition_rcb(UG_Partition *partition, Arena *arena, UG_Mesh *m
   scratch_end(&scratch);
   profiler_end_function();
 }
+
