@@ -1,10 +1,10 @@
 // (C) Copyright 2026 Matyas Constans
 // Licensed under the MIT License (https://opensource.org/license/mit/)
 
-#include "thirdparty/spall.h"  // TODO(cmat): Get rid of this dependency.
+#include "../thirdparty/spall.h"  // TODO(cmat): Get rid of this dependency.
 
 #define FFC_IMPL
-#include "thirdparty/ffc.h"
+#include "../thirdparty/ffc.h"
 
 #include "core_common.c"
 #include "core_math.c"

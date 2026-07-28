@@ -1,3 +1,0 @@
-1. Optimize memory usage (reorder_u32, reorder_u32_old_to_new, etc.).
-2. Optimize partitioning time by offloading NUMA partitioning to ranks.
-3. 

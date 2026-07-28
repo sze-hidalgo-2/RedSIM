@@ -1,248 +1,308 @@
-#pragma pack(push, 1)
-typedef struct UG_Partition_RCB_Key {
-  V3U center;
-  U32 cell;
-} UG_Partition_RCB_Key;
-#pragma pack(pop)
+// ================================================================
+// #-- Mesh Partitioning: Zoltan (RCB + Graph)
+// ================================================================
+//
+// NOTE(cmat): Mirrors the interface of ug_partition_rcb, but delegates the
+// - actual decomposition to Zoltan. RCB and graph partitioning share the
+// - same object query callbacks; graph partitioning additionally registers
+// - edge callbacks built from cell face adjacency.
+//
+// NOTE(cmat): Runs on a single lane-group (lane_index() == 0) against the
+// - full global mesh, same as ug_partition_rcb -- Zoltan is therefore driven
+// - on MPI_COMM_SELF. If this ever needs to run collectively across ranks
+// - (e.g. re-partitioning an already-distributed mesh), swap MPI_COMM_SELF
+// - for the real communicator and have the callbacks report only
+// - locally-owned cells instead of the whole mesh.
+//
+// NOTE(cmat): Verify these callback signatures against your installed
+// - zoltan.h -- the shape below matches the stable Zoltan C API, but a few
+// - fields (e.g. exact float vs double weight types) can shift slightly
+// - between Zoltan versions/build configs.
 
-Assert_Compiler(sizeof(UG_Partition_RCB_Key) == 4 * sizeof(U32));
+#include <stdio.h>
+#include <mpi.h>
+#include <zoltan.h>
 
-// ============================================================
-// CHANGE 1 & 2: bounds-update bug fix + restored adaptive axis
-// ============================================================
-// Added `root_bounds` param so we can classify each leaf's
-// boundary-touching faces later (see CHANGE 4/5). Doesn't affect
-// existing signature semantics otherwise.
-function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Range3_F32 root_bounds, Range3_F32 bounds, U32 partition_begin, U32 partition_count, Range1_U64 range, UG_Partition_RCB_Key *rcb_keys, U32 depth) {
-  profiler_begin_function();
-  U64 range_len = range1_u64_len(range);
+typedef struct UG_Zoltan_Context {
+  UG_Mesh *mesh;
+} UG_Zoltan_Context;
 
-  if (partition_count == 1) {
-    log_info("RCB leaf #%u: %'llu elements", partition_begin, range_len);
+// ------------------------------------------------------------
+// #-- Shared query callbacks
 
-    UG_Partition_Block *block = &partition->blocks_dat[partition_begin];
-
-    block->cells_len = range_len;
-    if (lane_index() == 0) {
-      block->cells_dat = arena_push_count(arena, U32, range_len);
-    }
-
-    lane_broadcast_ptr(&block->cells_dat, 0);
-
-    for Iter_Range(it, lane_range(range_len)) {
-      U32 index = it + range.min;
-      block->cells_dat[it]                                = rcb_keys[index].cell;
-      partition->cells_block_index[rcb_keys[index].cell]  = partition_begin;
-      partition->cells_local_index[rcb_keys[index].cell]  = it;
-    }
-
-    lane_barrier();
-
-    // CHANGE 4: record each leaf's final geometric bounds so we can
-    // classify boundary-touching faces after the fact, without any
-    // extra tree walk. Requires `bounds_dat` added to UG_Partition (see below).
-    if (lane_index() == 0) {
-      partition->bounds_dat[partition_begin] = bounds;
-    }
-
-  } else {
-    // CHANGE 2: adaptive largest-axis split is now safe to re-enable,
-    // because CHANGE 1 (below) makes `bounds` shrink exactly and
-    // symmetrically regardless of cell density. Previously this branch
-    // made things *worse* because bounds were density-warped, causing
-    // sibling nodes to diverge onto inconsistent axis sequences.
-    U32 split_axis = 0;
-    range3_f32_largest_axis(bounds, &split_axis);
-
-    // CHANGE 2b: stability guard. Near-cubic sub-boxes (common right after
-    // a split) can flip which axis is "largest" from F32 rounding noise
-    // alone, causing sibling branches to pick different axes for what
-    // should be a symmetric cut. Fall back to depth-cycling only when the
-    // two largest axes are within a tight tolerance of each other.
-    {
-      V3F extent = v3f_sub(bounds.max, bounds.min);
-      F32 sorted[3] = { extent.x, extent.y, extent.z };
-      // simple 3-element sort
-      if (sorted[0] < sorted[1]) { F32 t = sorted[0]; sorted[0] = sorted[1]; sorted[1] = t; }
-      if (sorted[1] < sorted[2]) { F32 t = sorted[1]; sorted[1] = sorted[2]; sorted[2] = t; }
-      if (sorted[0] < sorted[1]) { F32 t = sorted[0]; sorted[0] = sorted[1]; sorted[1] = t; }
-      F32 relative_gap = (sorted[0] - sorted[1]) / f32_max(sorted[0], 1e-6f);
-      if (relative_gap < 0.01f) { // within 1% — treat as tied
-        split_axis = depth % 3;
-      }
-    }
-
-    array_sort_radix_u32(range_len, sizeof(UG_Partition_RCB_Key) / sizeof(U32), split_axis, (U32 *)(rcb_keys + range.min));
-
-    U32 left_partition_count  = partition_count / 2;
-    U32 right_partition_count = partition_count - left_partition_count;
-
-    U64 center_index = range.min + (range_len * left_partition_count) / partition_count;
-
-    // CHANGE 1: THE BUG. Previously we set the child bounds to the
-    // *coordinate of the median cell* (center.dat[split_axis]), which
-    // conflates "where the cell-count-balanced cut falls" with "what the
-    // geometric bound of each child is." On non-uniform density meshes
-    // (boundary-layer clustering, refinement near walls) these are NOT
-    // the same point, so bounds_left/bounds_right became asymmetric in a
-    // density-dependent way — corrupting every subsequent recursive split
-    // and any downstream axis-selection logic.
-    //
-    // Fix: use the geometric midpoint of the CURRENT bounds for the split
-    // plane. Cell-count balance is still achieved via center_index (used
-    // below to cut the sorted array) — we've just decoupled it from the
-    // geometric bound, which is what it should always have been.
-    F32 split_coord = 0.5f * (bounds.min.dat[split_axis] + bounds.max.dat[split_axis]);
-
-    Range3_F32 bounds_left  = bounds;
-    Range3_F32 bounds_right = bounds;
-    bounds_left.max.dat[split_axis]  = split_coord;
-    bounds_right.min.dat[split_axis] = split_coord;
-
-    ug_partition_rcb_split(partition, arena, root_bounds, bounds_left,  partition_begin,                        left_partition_count,  range1_u64(range.min,    center_index), rcb_keys, depth + 1);
-    ug_partition_rcb_split(partition, arena, root_bounds, bounds_right, partition_begin + left_partition_count, right_partition_count, range1_u64(center_index, range.max),    rcb_keys, depth + 1);
-  }
-
-  profiler_end_function();
+static int ug_zoltan_num_obj_fn(void *data, int *ierr) {
+  UG_Zoltan_Context *ctx = (UG_Zoltan_Context *)data;
+  *ierr = ZOLTAN_OK;
+  return (int)ctx->mesh->cells.len;
 }
 
-function void ug_partition_rcb(UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count) {
-  profiler_begin_function();
+static void ug_zoltan_obj_list_fn(void *data, int num_gid_entries, int num_lid_entries,
+                                   ZOLTAN_ID_PTR global_ids, ZOLTAN_ID_PTR local_ids,
+                                   int wgt_dim, float *obj_wgts, int *ierr) {
+  UG_Zoltan_Context *ctx = (UG_Zoltan_Context *)data;
+  U64                len = ctx->mesh->cells.len;
+
+  for (U64 it = 0; it < len; it += 1) {
+    global_ids[it * num_gid_entries] = (ZOLTAN_ID_TYPE)it;
+    if (num_lid_entries) { local_ids[it * num_lid_entries] = (ZOLTAN_ID_TYPE)it; }
+    if (wgt_dim > 0)     { obj_wgts[it * wgt_dim] = 1.f; } // NOTE(cmat): Uniform weight; swap for cells.volume[it] to balance by cell size instead.
+  }
+
+  *ierr = ZOLTAN_OK;
+}
+
+// ------------------------------------------------------------
+// #-- RCB (geometric) callbacks
+
+static int ug_zoltan_num_geom_fn(void *data, int *ierr) {
+  *ierr = ZOLTAN_OK;
+  return 3;
+}
+
+static void ug_zoltan_geom_multi_fn(void *data, int num_gid_entries, int num_lid_entries, int num_obj,
+                                     ZOLTAN_ID_PTR global_ids, ZOLTAN_ID_PTR local_ids,
+                                     int num_dim, double *geom_vec, int *ierr) {
+  UG_Zoltan_Context *ctx = (UG_Zoltan_Context *)data;
+
+  for (int it = 0; it < num_obj; it += 1) {
+    U32 cell   = (U32)global_ids[it * num_gid_entries];
+    V3F center = ctx->mesh->cells.center[cell];
+
+    geom_vec[it * 3 + 0] = (double)center.x;
+    geom_vec[it * 3 + 1] = (double)center.y;
+    geom_vec[it * 3 + 2] = (double)center.z;
+  }
+
+  *ierr = ZOLTAN_OK;
+}
+
+// ------------------------------------------------------------
+// #-- Graph callbacks
+//
+// NOTE(cmat): Edges are built from cell face adjacency. Only "inner"
+// - adjacency (adjacent < cells.len) counts as a graph edge -- ghost /
+// - boundary faces have no counterpart cell and are skipped, matching the
+// - same `adjacent < cells.len` convention used throughout ug_mesh_*.
+
+static void ug_zoltan_num_edges_multi_fn(void *data, int num_gid_entries, int num_lid_entries, int num_obj,
+                                          ZOLTAN_ID_PTR global_ids, ZOLTAN_ID_PTR local_ids,
+                                          int *num_edges, int *ierr) {
+  UG_Zoltan_Context *ctx = (UG_Zoltan_Context *)data;
+
+  for (int it = 0; it < num_obj; it += 1) {
+    U32            cell  = (U32)global_ids[it * num_gid_entries];
+    UG_Cell_Faces *faces = &ctx->mesh->cells.faces[cell];
+
+    int count = 0;
+    for Iter_Index(face, 4) {
+      count += (faces->adjacent[face] < ctx->mesh->cells.len);
+    }
+
+    num_edges[it] = count;
+  }
+
+  *ierr = ZOLTAN_OK;
+}
+
+static void ug_zoltan_edge_list_multi_fn(void *data, int num_gid_entries, int num_lid_entries, int num_obj,
+                                          ZOLTAN_ID_PTR global_ids, ZOLTAN_ID_PTR local_ids,
+                                          int *num_edges, ZOLTAN_ID_PTR nbor_global_id, int *nbor_procs,
+                                          int wgt_dim, float *ewgts, int *ierr) {
+  UG_Zoltan_Context *ctx     = (UG_Zoltan_Context *)data;
+  U64                edge_at = 0;
+
+  for (int it = 0; it < num_obj; it += 1) {
+    U32            cell  = (U32)global_ids[it * num_gid_entries];
+    UG_Cell_Faces *faces = &ctx->mesh->cells.faces[cell];
+
+    for Iter_Index(face, 4) {
+      U32 adjacent = faces->adjacent[face];
+      if (adjacent < ctx->mesh->cells.len) {
+        nbor_global_id[edge_at * num_gid_entries] = (ZOLTAN_ID_TYPE)adjacent;
+        nbor_procs[edge_at]                       = 0; // NOTE(cmat): Serial partition -- every cell "lives" on rank 0.
+        if (wgt_dim > 0) { ewgts[edge_at * wgt_dim] = 1.f; }
+        edge_at += 1;
+      }
+    }
+  }
+
+  *ierr = ZOLTAN_OK;
+}
+
+// ------------------------------------------------------------
+// #-- Shared setup / result gathering
+
+static void ug_zoltan_initialize_once(void) {
+  static B32 initialized = 0;
+  if (!initialized) {
+    F32    version = 0;
+    int    argc    = 0;
+    char **argv    = 0;
+    Zoltan_Initialize(argc, argv, &version);
+    initialized = 1;
+  }
+}
+
+// NOTE(cmat): Shared by both partitioners -- scatters Zoltan's flat
+// - (cell, target_block) export list into the same UG_Partition layout
+// - ug_partition_rcb_split builds (blocks_dat / cells_block_index / cells_local_index).
+static void ug_partition_zoltan_finalize(UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count,
+                                          int num_export, ZOLTAN_ID_PTR export_global_ids, int *export_to_part) {
   Arena_Temp scratch = scratch_start(arena);
-  log_zone_start("Partitioning mesh: RCB");
 
-  UG_Partition_RCB_Key *rcb_keys = 0;
-  if (lane_index() == 0) {
-    rcb_keys = arena_push_count(scratch.arena, UG_Partition_RCB_Key, mesh->cells.len);
+  partition->blocks_dat         = arena_push_count(arena, UG_Partition_Block, partition_count);
+  partition->cells_block_index  = arena_push_count(arena, U32,                mesh->cells.len);
+  partition->cells_local_index  = arena_push_count(arena, U32,                mesh->cells.len);
+
+  // NOTE(cmat): Count cells assigned to each block.
+  U64 *block_counts = arena_push_count(scratch.arena, U64, partition_count);
+  for (int it = 0; it < num_export; it += 1) {
+    U32 block = (U32)export_to_part[it];
+    block_counts[block] += 1;
   }
-  lane_broadcast_ptr(&rcb_keys, 0);
 
-  for Iter_Range(it, lane_range(mesh->cells.len)) {
-    V3F center          = mesh->cells.center[it];
-    rcb_keys[it].center = v3u(radix_key_from_f32(center.x), radix_key_from_f32(center.y), radix_key_from_f32(center.z));
-    rcb_keys[it].cell   = it;
+  for Iter_Index(block, partition_count) {
+    partition->blocks_dat[block].cells_len = block_counts[block];
+    partition->blocks_dat[block].cells_dat = arena_push_count(arena, U32, block_counts[block]);
   }
-  lane_barrier();
 
-  log_info("Computing partitions for %u blocks", partition_count);
-  Range3_F32 bounds = mesh->bounds;
+  // NOTE(cmat): Scatter cells into their block, filling both index maps.
+  U64 *block_write_at = arena_push_count(scratch.arena, U64, partition_count);
+  for (int it = 0; it < num_export; it += 1) {
+    U32 cell  = (U32)export_global_ids[it];
+    U32 block = (U32)export_to_part[it];
+    U32 local = (U32)(block_write_at[block]++);
+
+    partition->blocks_dat[block].cells_dat[local] = cell;
+    partition->cells_block_index[cell]            = block;
+    partition->cells_local_index[cell]            = local;
+  }
+
+  scratch_end(&scratch);
+}
+
+// ------------------------------------------------------------
+// #-- RCB entry point
+
+function void ug_partition_zoltan_rcb(UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count) {
+  profiler_begin_function();
+  log_zone_start("Partitioning mesh: Zoltan RCB");
 
   partition->blocks_len = partition_count;
+
   if (lane_index() == 0) {
-    partition->blocks_dat         = arena_push_count(arena, UG_Partition_Block, partition_count);
-    partition->cells_block_index  = arena_push_count(arena, U32,                mesh->cells.len);
-    partition->cells_local_index  = arena_push_count(arena, U32,                mesh->cells.len);
-    // CHANGE 4: storage for each leaf's final geometric bounds.
-    partition->bounds_dat         = arena_push_count(arena, Range3_F32,         partition_count);
+    ug_zoltan_initialize_once();
+
+    struct Zoltan_Struct *zz  = Zoltan_Create(MPI_COMM_SELF);
+    UG_Zoltan_Context     ctx = { .mesh = mesh };
+
+    Zoltan_Set_Param(zz, "LB_METHOD",        "RCB");
+    Zoltan_Set_Param(zz, "NUM_GID_ENTRIES",  "1");
+    Zoltan_Set_Param(zz, "NUM_LID_ENTRIES",  "1");
+    Zoltan_Set_Param(zz, "OBJ_WEIGHT_DIM",   "1");
+    Zoltan_Set_Param(zz, "RETURN_LISTS",     "PARTS");
+    Zoltan_Set_Param(zz, "DEBUG_LEVEL",      "0");
+
+    char partition_count_str[32];
+    snprintf(partition_count_str, sizeof(partition_count_str), "%u", partition_count);
+    Zoltan_Set_Param(zz, "NUM_GLOBAL_PARTS", partition_count_str);
+
+    Zoltan_Set_Num_Obj_Fn    (zz, ug_zoltan_num_obj_fn,    &ctx);
+    Zoltan_Set_Obj_List_Fn   (zz, ug_zoltan_obj_list_fn,   &ctx);
+    Zoltan_Set_Num_Geom_Fn   (zz, ug_zoltan_num_geom_fn,   &ctx);
+    Zoltan_Set_Geom_Multi_Fn (zz, ug_zoltan_geom_multi_fn, &ctx);
+
+    int           changes, num_gid_entries, num_lid_entries;
+    int           num_import, num_export;
+    ZOLTAN_ID_PTR import_global_ids, import_local_ids, export_global_ids, export_local_ids;
+    int          *import_procs, *import_to_part, *export_procs, *export_to_part;
+
+    int result = Zoltan_LB_Partition(zz, &changes, &num_gid_entries, &num_lid_entries,
+                                      &num_import, &import_global_ids, &import_local_ids, &import_procs, &import_to_part,
+                                      &num_export, &export_global_ids, &export_local_ids, &export_procs, &export_to_part);
+
+    Assert(result == ZOLTAN_OK, "Zoltan RCB partition failed");
+    log_info("Zoltan RCB produced %u blocks from %d exported cells", partition_count, num_export);
+
+    ug_partition_zoltan_finalize(partition, arena, mesh, partition_count, num_export, export_global_ids, export_to_part);
+
+    Zoltan_LB_Free_Part(&import_global_ids, &import_local_ids, &import_procs, &import_to_part);
+    Zoltan_LB_Free_Part(&export_global_ids, &export_local_ids, &export_procs, &export_to_part);
+    Zoltan_Destroy(&zz);
   }
 
-  lane_broadcast_ptr(&partition->blocks_dat,          0);
-  lane_broadcast_ptr(&partition->cells_block_index,   0);
-  lane_broadcast_ptr(&partition->cells_local_index,   0);
-  lane_broadcast_ptr(&partition->bounds_dat,          0);
-
-  ug_partition_rcb_split(partition, arena, bounds, bounds, 0, partition_count, range1_u64(0, mesh->cells.len), rcb_keys, 0);
-
+  lane_broadcast_ptr(&partition->blocks_dat,         0);
+  lane_broadcast_ptr(&partition->cells_block_index,  0);
+  lane_broadcast_ptr(&partition->cells_local_index,  0);
   lane_barrier();
 
   log_zone_end();
-  scratch_end(&scratch);
   profiler_end_function();
 }
 
-// ============================================================
-// CHANGE 5: cost-aware rank assignment (new)
-// ============================================================
-// This is the part that actually targets your measured 2x per-block
-// halo-count spread. Geometric RCB balances cell count, not comm cost —
-// corner/edge/face/interior blocks are structurally unequal in halo size
-// no matter how well the axis/bounds logic works (see prior message).
-// Rather than trying to force equal-cost geometric partitions (hard to
-// get right, easy to get wrong), we balance at RANK assignment time:
-// greedily bin-pack the 64 already-computed blocks onto N ranks so each
-// rank's TOTAL halo-exchange cost is balanced, instead of assigning
-// blocks to ranks contiguously (block_id / blocks_per_rank) or by
-// round-robin, either of which can accidentally concentrate all the
-// expensive "interior" blocks onto a few ranks.
-//
-// Uses LPT (Longest Processing Time first): sort blocks by cost
-// descending, repeatedly assign the next-heaviest block to the
-// currently-lightest rank. Simple, well-understood, gives a bound of
-// within ~4/3 of optimal for this kind of scheduling problem.
-typedef struct UG_Partition_Rank_Assignment {
-  U32  len;          // == partition_count
-  U32 *block_rank;   // block_rank[block_index] = rank
-} UG_Partition_Rank_Assignment;
+// ------------------------------------------------------------
+// #-- Graph entry point
 
-function void ug_partition_assign_ranks_by_cost(
-  UG_Partition_Rank_Assignment *out,
-  Arena *arena,
-  U32   *block_halo_count,   // halo count per block, e.g. from ug_mesh_array_from_partition
-  U32   *block_ghost_count,  // ghost count per block
-  U32    block_count,
-  U32    rank_count,
-  F32    halo_weight,        // tune empirically; start at 1.0
-  F32    ghost_weight        // start lower than halo_weight — ghost cells
-                              // are typically cheaper than a full halo
-                              // exchange (no MPI round-trip), adjust to taste
-) {
-  out->len        = block_count;
-  out->block_rank = arena_push_count(arena, U32, block_count);
+function void ug_partition_zoltan_graph(UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count) {
+  profiler_begin_function();
+  log_zone_start("Partitioning mesh: Zoltan Graph");
 
-  // Compute per-block cost.
-  Arena_Temp scratch = scratch_start(arena);
-  F32 *cost       = arena_push_count(scratch.arena, F32, block_count);
-  U32 *sorted_idx = arena_push_count(scratch.arena, U32, block_count);
-  for (U32 i = 0; i < block_count; i += 1) {
-    cost[i]       = halo_weight * (F32)block_halo_count[i] + ghost_weight * (F32)block_ghost_count[i];
-    sorted_idx[i] = i;
+  partition->blocks_len = partition_count;
+
+  if (lane_index() == 0) {
+    ug_zoltan_initialize_once();
+
+    struct Zoltan_Struct *zz  = Zoltan_Create(MPI_COMM_SELF);
+    UG_Zoltan_Context     ctx = { .mesh = mesh };
+
+    Zoltan_Set_Param(zz, "LB_METHOD",        "GRAPH");
+    Zoltan_Set_Param(zz, "GRAPH_PACKAGE",    "PARMETIS"); // NOTE(cmat): Switch to "PHG" if ParMETIS isn't linked in.
+    Zoltan_Set_Param(zz, "NUM_GID_ENTRIES",  "1");
+    Zoltan_Set_Param(zz, "NUM_LID_ENTRIES",  "1");
+    Zoltan_Set_Param(zz, "OBJ_WEIGHT_DIM",   "1");
+    Zoltan_Set_Param(zz, "EDGE_WEIGHT_DIM",  "1");
+    Zoltan_Set_Param(zz, "RETURN_LISTS",     "PARTS");
+    Zoltan_Set_Param(zz, "DEBUG_LEVEL",      "0");
+
+    char partition_count_str[32];
+    snprintf(partition_count_str, sizeof(partition_count_str), "%u", partition_count);
+    Zoltan_Set_Param(zz, "NUM_GLOBAL_PARTS", partition_count_str);
+
+    Zoltan_Set_Num_Obj_Fn         (zz, ug_zoltan_num_obj_fn,         &ctx);
+    Zoltan_Set_Obj_List_Fn        (zz, ug_zoltan_obj_list_fn,        &ctx);
+    Zoltan_Set_Num_Edges_Multi_Fn (zz, ug_zoltan_num_edges_multi_fn, &ctx);
+    Zoltan_Set_Edge_List_Multi_Fn (zz, ug_zoltan_edge_list_multi_fn, &ctx);
+
+    int           changes, num_gid_entries, num_lid_entries;
+    int           num_import, num_export;
+    ZOLTAN_ID_PTR import_global_ids, import_local_ids, export_global_ids, export_local_ids;
+    int          *import_procs, *import_to_part, *export_procs, *export_to_part;
+
+    int result = Zoltan_LB_Partition(zz, &changes, &num_gid_entries, &num_lid_entries,
+                                      &num_import, &import_global_ids, &import_local_ids, &import_procs, &import_to_part,
+                                      &num_export, &export_global_ids, &export_local_ids, &export_procs, &export_to_part);
+
+    Assert(result == ZOLTAN_OK, "Zoltan graph partition failed");
+    log_info("Zoltan graph produced %u blocks from %d exported cells", partition_count, num_export);
+
+    ug_partition_zoltan_finalize(partition, arena, mesh, partition_count, num_export, export_global_ids, export_to_part);
+
+    Zoltan_LB_Free_Part(&import_global_ids, &import_local_ids, &import_procs, &import_to_part);
+    Zoltan_LB_Free_Part(&export_global_ids, &export_local_ids, &export_procs, &export_to_part);
+    Zoltan_Destroy(&zz);
   }
 
-  // Sort block indices by cost descending (simple insertion sort is fine —
-  // block_count is small, e.g. 64; swap for array_sort_radix if this ever
-  // needs to scale to thousands of blocks).
-  for (U32 i = 1; i < block_count; i += 1) {
-    U32 key_idx = sorted_idx[i];
-    F32 key_cost = cost[key_idx];
-    I32 j = (I32)i - 1;
-    while (j >= 0 && cost[sorted_idx[j]] < key_cost) {
-      sorted_idx[j + 1] = sorted_idx[j];
-      j -= 1;
-    }
-    sorted_idx[j + 1] = key_idx;
-  }
+  lane_broadcast_ptr(&partition->blocks_dat,         0);
+  lane_broadcast_ptr(&partition->cells_block_index,  0);
+  lane_broadcast_ptr(&partition->cells_local_index,  0);
+  lane_barrier();
 
-  // Greedy LPT bin-pack onto ranks.
-  F32 *rank_load = arena_push_count(scratch.arena, F32, rank_count);
-  for (U32 r = 0; r < rank_count; r += 1) rank_load[r] = 0.0f;
-
-  for (U32 i = 0; i < block_count; i += 1) {
-    U32 block = sorted_idx[i];
-
-    U32 lightest_rank = 0;
-    F32 lightest_load  = rank_load[0];
-    for (U32 r = 1; r < rank_count; r += 1) {
-      if (rank_load[r] < lightest_load) {
-        lightest_load  = rank_load[r];
-        lightest_rank  = r;
-      }
-    }
-
-    out->block_rank[block]  = lightest_rank;
-    rank_load[lightest_rank] += cost[block];
-  }
-
-  // Sanity log — check this after switching over. Max/min per-rank load
-  // ratio should drop from ~2.0x (your current contiguous grouping,
-  // assuming it happens to line up with octants) toward ~1.0-1.1x.
-  {
-    F32 min_load = rank_load[0], max_load = rank_load[0];
-    for (U32 r = 1; r < rank_count; r += 1) {
-      min_load = f32_min(min_load, rank_load[r]);
-      max_load = f32_max(max_load, rank_load[r]);
-    }
-    log_info("Rank cost balance: min %.1f, max %.1f, ratio %.3f", min_load, max_load, max_load / f32_max(min_load, 1.0f));
-  }
-
-  scratch_end(&scratch);
+  log_zone_end();
+  profiler_end_function();
 }
+
+// ------------------------------------------------------------
+// #-- Header declarations to add alongside ug_partition_rcb:
+//
+// function void ug_partition_zoltan_rcb   (UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count);
+// function void ug_partition_zoltan_graph (UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count);

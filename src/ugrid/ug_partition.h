@@ -12,4 +12,8 @@ typedef struct UG_Partition {
   Range3_F32         *bounds_dat;
 } UG_Partition;
 
-function void ug_partition_rcb(UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count);
+// NOTE(cmat): Custom implementations.
+function void ug_partition_rcb        (UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count);
+
+// NOTE(cmat): Zoltan-based implementations.
+function void ug_partition_zoltan_rcb (UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count);

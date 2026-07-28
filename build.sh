@@ -100,6 +100,9 @@ linker_flags+=" -lnuma"
 linker_flags+=" -lpthread"
 linker_flags+=" -o redsim_cpu"
 
+# NOTE(cmat): Statically link thirdparty dependencies.
+linker_flags+=" $(realpath ./build/libzoltan.a)"
+
 # ------------------------------------------------------------
 # NOTE(cmat): Invoke compiler
 pushd build > /dev/null 2>&1

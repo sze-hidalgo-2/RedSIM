@@ -117,4 +117,3 @@ function void ug_partition_rcb(UG_Partition *partition, Arena *arena, UG_Mesh *m
   scratch_end(&scratch);
   profiler_end_function();
 }
-
