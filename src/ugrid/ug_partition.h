@@ -16,4 +16,5 @@ typedef struct UG_Partition {
 function void ug_partition_rcb        (UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count);
 
 // NOTE(cmat): Zoltan-based implementations.
-function void ug_partition_zoltan_rcb (UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count);
+function void ug_partition_zoltan_rcb   (UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count);
+function void ug_partition_zoltan_graph (UG_Partition *partition, Arena *arena, UG_Mesh *mesh, U32 partition_count);
