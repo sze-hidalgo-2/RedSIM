@@ -107,8 +107,8 @@ zz/zz_struct.c zz/zz_back_trace.c
 zz/zz_util.c
 "
 
-compiler_flags="-O3 -fno-strict-aliasing -flto"
-linker_flags="-flto"
+compiler_flags="-O3 -fno-strict-aliasing"
+linker_flags=""
 $compiler -c $compiler_flags $include_dir $source_files $linker_flags
 ar rcs libzoltan.a *.o
 # mv libzoltan.a ../../../build/

@@ -96,12 +96,12 @@ compiler_flags+=" -march=native"
 compiler_flags+=" -std=c99"
 # compiler_flags+=" -Wall"
 
-linker_flags+=" -lnuma"
-linker_flags+=" -lpthread"
-linker_flags+=" -o redsim_cpu"
+linker_flags+=" -lnuma -lpthread -lm"
 
 # NOTE(cmat): Statically link thirdparty dependencies.
 linker_flags+=" $(realpath ./build/libzoltan.a)"
+
+linker_flags+=" -o redsim_cpu"
 
 # ------------------------------------------------------------
 # NOTE(cmat): Invoke compiler
