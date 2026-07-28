@@ -91,7 +91,9 @@ enum {
 #if OS_WASM
 #define arena_default_chunk_bytes u64_kilobytes(64)
 #else
-#define arena_default_chunk_bytes u64_megabytes(64)
+// TODO(cmat): Tune this value. What if we have 32 threads?
+// #define arena_default_chunk_bytes u64_megabytes(64)
+#define arena_default_chunk_bytes u64_megabytes(32)
 #endif
 
 

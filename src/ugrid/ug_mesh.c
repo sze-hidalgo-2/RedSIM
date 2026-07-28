@@ -1036,9 +1036,25 @@ function void ug_mesh_optimize_reorder(UG_Mesh *mesh, Range1_U64 range) {
 
   // NOTE(cmat): Reorder elements.
   lane_barrier();
-  array_reorder(range_len,  sizeof(V3F),           (U08 *)(mesh->cells.center + range.min), sizeof(V2_U64), &morton_codes->y);
-  array_reorder(range_len,  sizeof(F32),           (U08 *)(mesh->cells.volume + range.min), sizeof(V2_U64), &morton_codes->y);
-  array_reorder(range_len,  sizeof(UG_Cell_Faces), (U08 *)(mesh->cells.faces  + range.min), sizeof(V2_U64), &morton_codes->y);
+
+  // NOTE(cmat): Reorder centers.
+  array_reorder_key_u64(range_len,  sizeof(V3F), sizeof(V3F), (U08 *)(mesh->cells.center + range.min), sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+
+  // NOTE(cmat): Reorder volumes.
+  array_reorder_key_u64(range_len,  sizeof(F32), sizeof(F32), (U08 *)(mesh->cells.volume + range.min), sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+
+  // NOTE(cmat): Reorder cell faces.
+  {
+    U64  stride       = sizeof(UG_Cell_Faces);
+    U08 *base         = (U08 *)(mesh->cells.faces + range.min);   // fixed: offset by range.min
+    U64  field_size   = sizeof(((UG_Cell_Faces *)0)->adjacent);
+
+    array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, adjacent),  sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, area),      sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_x),  sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_y),  sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_z),  sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+  }
 
   // NOTE(cmat): Remap adjacent cells (only inner ones).
   lane_barrier();
@@ -1139,9 +1155,9 @@ function void ug_mesh_reorder_by_groups(UG_Mesh *mesh) {
   }
 
   // NOTE(cmat): old -> new cell index map.
-  U64 *old_to_new = 0;
+  U32 *old_to_new = 0;
   if (lane_index() == 0) {
-    old_to_new = arena_push_count(scratch.arena, U64, mesh->cells.len);
+    old_to_new = arena_push_count(scratch.arena, U32, mesh->cells.len);
   }
 
   lane_broadcast_ptr(&old_to_new, 0);
@@ -1160,9 +1176,9 @@ function void ug_mesh_reorder_by_groups(UG_Mesh *mesh) {
   // NOTE(cmat): Now we invert the map to new -> old.
   lane_barrier();
 
-  U64 *new_to_old = 0;
+  U32 *new_to_old = 0;
   if (lane_index() == 0) {
-    new_to_old = arena_push_count(scratch.arena, U64, mesh->cells.len);
+    new_to_old = arena_push_count(scratch.arena, U32, mesh->cells.len);
   }
 
   lane_broadcast_ptr(&new_to_old, 0);
@@ -1176,9 +1192,25 @@ function void ug_mesh_reorder_by_groups(UG_Mesh *mesh) {
 
   // NOTE(cmat): Reorder elements.
   lane_barrier();
-  array_reorder(mesh->cells.len,  sizeof(V3F),           (U08 *)(mesh->cells.center), sizeof(U64), new_to_old);
-  array_reorder(mesh->cells.len,  sizeof(F32),           (U08 *)(mesh->cells.volume), sizeof(U64), new_to_old);
-  array_reorder(mesh->cells.len,  sizeof(UG_Cell_Faces), (U08 *)(mesh->cells.faces),  sizeof(U64), new_to_old);
+
+  // NOTE(cmat): Reorder centers.
+  array_reorder_key_u32(mesh->cells.len,  sizeof(V3F),  sizeof(V3F), (U08 *)(mesh->cells.center), sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+
+  // NOTE(cmat): Reorder volumes.
+  array_reorder_key_u32(mesh->cells.len,  sizeof(F32), sizeof(F32), (U08 *)(mesh->cells.volume), sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+
+  // NOTE(cmat): Reorder cell faces.
+  {
+    U64  stride       = sizeof(UG_Cell_Faces);
+    U08 *base         = (U08 *)mesh->cells.faces;
+    U64  field_size   = sizeof(((UG_Cell_Faces *)0)->adjacent);
+
+    array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, adjacent),  sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, area),      sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_x),  sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_y),  sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_z),  sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+  }
 
   // NOTE(cmat): Remap adjacent cells (only inner ones).
   lane_barrier();

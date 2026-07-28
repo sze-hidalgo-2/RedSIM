@@ -37,7 +37,7 @@ function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Rang
 
   } else {
     U32 split_axis = 0;
-#if 1
+#if 0
     range3_f32_largest_axis (bounds, &split_axis);
 #else
     split_axis = depth % 3;

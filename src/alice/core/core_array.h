@@ -3,9 +3,15 @@
 
 // ------------------------------------------------------------
 // #-- Reordering
+typedef U32 Array_Reorder_Mode;
+enum {
+  Array_Reorder_Mode_New_To_Old,
+  Array_Reorder_Mode_Old_To_New,
+};
 
 // TODO(cmat): Make this API more user friendly.
-function void array_reorder(U64 array_len, U64 type_size, U08 *array_dat, U64 key_size, U64 *key_dat);
+function void array_reorder_key_u32(U64 array_len, U64 stride, U64 copy_size, U08 *array_dat, U64 key_size, U32 *key_dat, Array_Reorder_Mode mode);
+function void array_reorder_key_u64(U64 array_len, U64 stride, U64 copy_size, U08 *array_dat, U64 key_size, U64 *key_dat, Array_Reorder_Mode mode);
 
 // ------------------------------------------------------------
 // #-- Radix Sort

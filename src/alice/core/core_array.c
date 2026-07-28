@@ -4,32 +4,34 @@
 // ------------------------------------------------------------
 // #-- Reordering
 
-function void array_reorder(U64 array_len, U64 type_size, U08 *array_dat, U64 key_size, U64 *key_dat) {
+function void array_reorder_key_u32(U64 array_len, U64 stride, U64 copy_size, U08 *array_dat, U64 key_size, U32 *key_dat, Array_Reorder_Mode mode) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(0);
 
   if (array_dat) {
-
-    U64 array_bytes = type_size * array_len;
     U08 *array_copy = 0;
     if (lane_index() == 0) {
-      array_copy = arena_push_size(scratch.arena, array_bytes);
+      array_copy = arena_push_size(scratch.arena, copy_size * array_len);
     }
-
     lane_broadcast_ptr(&array_copy, 0);
 
     // NOTE(cmat): Copy array.
-    Range1_U64 copy_range     = lane_range(array_len);
-    U64        copy_bytes_off = type_size * copy_range.min;
-    U64        copy_bytes_len = type_size * range1_u64_len(copy_range);
-    memory_copy(array_copy + copy_bytes_off, array_dat + copy_bytes_off, copy_bytes_len);
+    for Iter_Range(it, lane_range(array_len)) {
+      memory_copy(array_copy + copy_size * it, array_dat + stride * it, copy_size);
+    }
 
-    // NOTE(cmat): Fill original by permutating copy.
     lane_barrier();
 
-    for Iter_Range(it, lane_range(array_len)) {
-      U64 key = *(U64 *)((U08 *)key_dat + it * key_size);
-      memory_copy(array_dat + type_size * it, array_copy + type_size * key, type_size);
+    if (mode == Array_Reorder_Mode_New_To_Old) {
+      for Iter_Range(it, lane_range(array_len)) {
+        U32 key = *(U32 *)((U08 *)key_dat + it * key_size);
+        memory_copy(array_dat + stride * it, array_copy + copy_size * key, copy_size);
+      }
+    } else {
+      for Iter_Range(it, lane_range(array_len)) {
+        U32 key = *(U32 *)((U08 *)key_dat + it * key_size);
+        memory_copy(array_dat + stride * key, array_copy + copy_size * it, copy_size);
+      }
     }
   }
 
@@ -37,6 +39,43 @@ function void array_reorder(U64 array_len, U64 type_size, U08 *array_dat, U64 ke
   scratch_end(&scratch);
   profiler_end_function();
 }
+
+function void array_reorder_key_u64(U64 array_len, U64 stride, U64 copy_size, U08 *array_dat, U64 key_size, U64 *key_dat, Array_Reorder_Mode mode) {
+  profiler_begin_function();
+  Arena_Temp scratch = scratch_start(0);
+
+  if (array_dat) {
+    U08 *array_copy = 0;
+    if (lane_index() == 0) {
+      array_copy = arena_push_size(scratch.arena, copy_size * array_len);
+    }
+    lane_broadcast_ptr(&array_copy, 0);
+
+    // NOTE(cmat): Copy array.
+    for Iter_Range(it, lane_range(array_len)) {
+      memory_copy(array_copy + copy_size * it, array_dat + stride * it, copy_size);
+    }
+
+    lane_barrier();
+
+    if (mode == Array_Reorder_Mode_New_To_Old) {
+      for Iter_Range(it, lane_range(array_len)) {
+        U64 key = *(U64 *)((U08 *)key_dat + it * key_size);
+        memory_copy(array_dat + stride * it, array_copy + copy_size * key, copy_size);
+      }
+    } else {
+      for Iter_Range(it, lane_range(array_len)) {
+        U64 key = *(U64 *)((U08 *)key_dat + it * key_size);
+        memory_copy(array_dat + stride * key, array_copy + copy_size * it, copy_size);
+      }
+    }
+  }
+
+  lane_barrier();
+  scratch_end(&scratch);
+  profiler_end_function();
+}
+
 
 // ------------------------------------------------------------
 // #-- Radix Sort
@@ -50,7 +89,7 @@ function void array_sort_radix_u32(U64 array_len, U64 array_stride, U64 array_of
 
   enum {
     // NOTE(cmat): 16 bits seem optimal, this leads to 2 passses and fits nicely into L1 cache.
-    Radix_Bits  = 16,
+    Radix_Bits  = 8, // 16,
     Bucket_Size = 1 << Radix_Bits,
     Radix_Mask  = Bucket_Size - 1,
   };
@@ -166,7 +205,7 @@ function void array_sort_radix_u64(U64 array_len, U64 array_stride, U64 array_of
 
   enum {
     // NOTE(cmat): 16 bits seem optimal, this leads to 4 passses and fits nicely into L1 cache.
-    Radix_Bits  = 16,
+    Radix_Bits  = 8, // 16,
     Bucket_Size = 1 << Radix_Bits,
     Radix_Mask  = Bucket_Size - 1,
   };

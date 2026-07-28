@@ -1,6 +1,3 @@
-- PARTITION 
-- NUMA thread groups
-- Mesh should own its own grid.
-- IPC Ensight Gold Export.
-- NUMA-based thread groups. Making sure to allocate on the right thread.
-- Config file.
+1. Optimize memory usage (reorder_u32, reorder_u32_old_to_new, etc.).
+2. Optimize partitioning time by offloading NUMA partitioning to ranks.
+3. 
