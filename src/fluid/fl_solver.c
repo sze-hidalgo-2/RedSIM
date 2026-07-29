@@ -259,7 +259,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
   // NOTE(cmat): Iterate.
   F64 time        = 0;
   F64 time_target = 0.001f;
-  for Iter_Index(it, 1000) {
+  for Iter_Index(it, 500) {
     F64 time_step = fl_solver_euler_solve_step(euler, CFL);
     time         += time_step;
     // log_info("Time: %.2g | Tau: %.2g", time, time_step);

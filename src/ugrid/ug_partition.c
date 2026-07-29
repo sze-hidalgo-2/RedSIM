@@ -36,27 +36,8 @@ function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Rang
     lane_barrier();
 
   } else {
-
-#if 0
     U32 split_axis = 0;
     range3_f32_largest_axis (bounds, &split_axis);
-
-    // NOTE(cmat): Stability guard for near cubic boxes. If relative gap is less than 1%, we switch back to cyclic.
-    {
-      V3F extent = v3f_sub(bounds.max, bounds.min);
-      F32 sorted[3] = { extent.x, extent.y, extent.z };
-      if (sorted[0] < sorted[1]) { F32 t = sorted[0]; sorted[0] = sorted[1]; sorted[1] = t; }
-      if (sorted[1] < sorted[2]) { F32 t = sorted[1]; sorted[1] = sorted[2]; sorted[2] = t; }
-      if (sorted[0] < sorted[1]) { F32 t = sorted[0]; sorted[0] = sorted[1]; sorted[1] = t; }
-      F32 relative_gap = (sorted[0] - sorted[1]) / f32_max(sorted[0], 1e-6f);
-      if (relative_gap < 0.01f) {
-        split_axis = depth % 3;
-      }
-    }
-#else
-    U32 split_axis = depth % 3;
-#endif
-
     array_sort_radix_u32    (range_len, sizeof(UG_Partition_RCB_Key) / sizeof(U32), split_axis, (U32 *)(rcb_keys + range.min));
 
     U32 left_partition_count  = partition_count / 2;
@@ -65,11 +46,12 @@ function void ug_partition_rcb_split(UG_Partition *partition, Arena *arena, Rang
     // NOTE(cmat): Find weighted center.
     U64 center_index = range.min + (range_len * left_partition_count) / partition_count;
     V3U center_key   = rcb_keys[center_index].center;
-    F32 split_coord  = 0.5f * (bounds.min.dat[split_axis] + bounds.max.dat[split_axis]);
+    F32 split_coord  = f32_from_radix_key(center_key.dat[split_axis]);
 
     Range3_F32 bounds_left = bounds;
     Range3_F32 bounds_right = bounds;
 
+    // TODO(cmat): We should recompute bounds.
     bounds_left.max.dat   [split_axis] = split_coord;
     bounds_right.min.dat  [split_axis] = split_coord;
     ug_partition_rcb_split(partition, arena, bounds_left,  partition_begin,                         left_partition_count,  range1_u64(range.min,    center_index), rcb_keys, depth + 1);
