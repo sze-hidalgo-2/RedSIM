@@ -15,4 +15,4 @@ module load LUMI
 module load partition/C
 module load cpeGNU
 
-srun --cpu-bind=none ./redsim_cpu "$1"
+srun --cpu-bind=cores ./redsim_cpu "$1"
