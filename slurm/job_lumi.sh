@@ -9,5 +9,9 @@
 #SBATCH --partition=standard
 #SBATCH --time=00:30:00
 
+module load LUMI
+module load partition/C
+module load cpeGNU
+
 export OMP_NUM_THREADS=1
 srun --cpu-bind=cores ./redsim_cpu "$1"
