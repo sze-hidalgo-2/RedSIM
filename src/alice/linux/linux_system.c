@@ -424,11 +424,6 @@ function void linux_state_init_context(U32 argc, U08 **argv) {
 function void linux_state_init_numa_layout(void) {
   SYS_NUMA_Layout *numa = &Linux_State.numa_layout;
   if (numa_available() >= 0) {
-
-    cpu_set_t proc_affinity;
-    CPU_ZERO(&proc_affinity);
-    sched_getaffinity(0, sizeof(proc_affinity), &proc_affinity);
-
     numa->nodes_len = numa_max_node() + 1;
     numa->nodes_dat = arena_push_count(&Linux_State.arena, SYS_NUMA_Node, numa->nodes_len);
 
@@ -440,7 +435,7 @@ function void linux_state_init_numa_layout(void) {
         // NOTE(cmat): Count CPU-s
         U64 cpu_count = 0;
         for Iter_Index(it_cpu, cpu_mask->size) {
-          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && CPU_ISSET(it_cpu, &proc_affinity)) {
+          if (numa_bitmask_isbitset(cpu_mask, it_cpu)) {
             cpu_count += 1;
           }
         }
@@ -451,7 +446,7 @@ function void linux_state_init_numa_layout(void) {
 
         U64 cpu_at = 0;
         for Iter_Index(it_cpu, cpu_mask->size) {
-          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && CPU_ISSET(it_cpu, &proc_affinity)) {
+          if (numa_bitmask_isbitset(cpu_mask, it_cpu)) {
             numa->nodes_dat[it_node].cpus_dat[cpu_at++] = it_cpu;
           }
         }
