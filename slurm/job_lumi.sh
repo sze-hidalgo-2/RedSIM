@@ -1,17 +1,11 @@
-#!/bin/bash
-#SBATCH --job-name=redsim_mpi
-#SBATCH --ntasks-per-node=8
-#SBATCH --cpus-per-task=32
-#SBATCH --threads-per-core=2
-#SBATCH --exclusive
-
-#SBATCH --account=project_465002685
+#!/bin/bash -l
+#SBATCH --job-name=redsim
 #SBATCH --partition=standard
+#SBATCH --ntasks-per-node=8
+#SBATCH --cpus-per-task=16
+#SBATCH --hint=nomultithread
 #SBATCH --time=00:30:00
+#SBATCH --account=project_465002685
 
-module load LUMI
-module load partition/C
-module load cpeGNU
-
-export OMP_NUM_THREADS=1
-srun --cpu-bind=cores ./redsim_cpu "$1"
+module load LUMI/24.03
+srun --cpu-bind=verbose,rank_ldom ./redsim_cpu "$1"
