@@ -421,6 +421,22 @@ function void linux_state_init_context(U32 argc, U08 **argv) {
   context->mmu_page_bytes = (U64)sysconf(_SC_PAGESIZE); 
 }
 
+function B32 linux_cpu_is_primary_sibling(SYS_CPU cpu_id) {
+  char path[128];
+  snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", (I32)cpu_id);
+
+  B32 result = 1; // NOTE(cmat): default to keep, in case sysfs read fails
+  I32 fd = open(path, O_RDONLY);
+  if (fd >= 0) {
+    char buffer[64] = {0};
+    read(fd, buffer, sizeof(buffer) - 1);
+    close(fd);
+    U64 first_sibling = strtoull(buffer, 0, 10);
+    result = (first_sibling == (U64)cpu_id);
+  }
+  return result;
+}
+
 function void linux_state_init_numa_layout(void) {
   SYS_NUMA_Layout *numa = &Linux_State.numa_layout;
   if (numa_available() >= 0) {
@@ -439,7 +455,7 @@ function void linux_state_init_numa_layout(void) {
         // NOTE(cmat): Count CPU-s
         U64 cpu_count = 0;
         for Iter_Index(it_cpu, cpu_mask->size) {
-          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && CPU_ISSET(it_cpu, &proc_affinity)) {
+          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && CPU_ISSET(it_cpu, &proc_affinity) && linux_cpu_is_primary_sibling((SYS_CPU)it_cpu)) {
             cpu_count += 1;
           }
         }
@@ -450,7 +466,7 @@ function void linux_state_init_numa_layout(void) {
 
         U64 cpu_at = 0;
         for Iter_Index(it_cpu, cpu_mask->size) {
-          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && CPU_ISSET(it_cpu, &proc_affinity)) {
+          if (numa_bitmask_isbitset(cpu_mask, it_cpu) && CPU_ISSET(it_cpu, &proc_affinity) && linux_cpu_is_primary_sibling((SYS_CPU)it_cpu)) {
             numa->nodes_dat[it_node].cpus_dat[cpu_at++] = it_cpu;
           }
         }
