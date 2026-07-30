@@ -7,5 +7,8 @@
 #SBATCH --time=00:30:00
 #SBATCH --account=project_465002685
 
-module load LUMI/24.03
+module load LUMI
+module load partition/C
+module load cpeGNU
+
 srun --cpu-bind=verbose,rank_ldom ./redsim_cpu "$1"
