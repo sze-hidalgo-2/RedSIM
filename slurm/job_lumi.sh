@@ -3,7 +3,6 @@
 #SBATCH --partition=standard
 #SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=16
-#SBATCH --threads-per-core=1
 #SBATCH --time=00:30:00
 #SBATCH --account=project_465002685
 
