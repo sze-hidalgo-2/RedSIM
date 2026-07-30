@@ -207,12 +207,7 @@ function void log_sys_numa_layout(void) {
     for Iter_Index(node_it, numa->nodes_len) {
       Log_Zone_Scope("Node-ID: %llu - CPU Count: %llu", node_it, numa->nodes_dat[node_it].cpus_len) {
         for Iter_Index(cpu_it, numa->nodes_dat[node_it].cpus_len) {
-          if (cpu_it >= 2) {
-            log_info("...");
-            break;
-          } else {
-            log_info("CPU-ID %llu", numa->nodes_dat[node_it].cpus_dat[cpu_it]);
-          }
+          log_info("CPU-ID %llu", numa->nodes_dat[node_it].cpus_dat[cpu_it]);
         }
       }
     }
