@@ -12,4 +12,3 @@ module load cpeGNU
 
 srun --cpu-bind=verbose,rank_ldom ./redsim_cpu "$1"
 
-
