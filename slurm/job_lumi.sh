@@ -10,4 +10,4 @@ module load LUMI
 module load partition/C
 module load cpeGNU
 
-srun --cpu-bind=verbose,map_cpu:0,16,32,48,64,80,96,112 "$1"
+srun --cpu-bind=verbose,map_cpu:0,16,32,48,64,80,96,112 redsim_cpu "$1"
