@@ -27,48 +27,49 @@ function void redsim_group_entry(void *user_data) {
   log_zone_start("Thread Group Entry");
 
   Arena permanent_arena = { };
-  Arena sync_arena      = { };
-
   arena_init(&permanent_arena);
-  arena_init(&sync_arena);
 
   // NOTE(cmat): Load mesh on rank 0 and partition it (still multithreaded, just single rank).
   // NOTE(cmat): Once we've loaded the mesh on rank 0, distribute to other ranks and partition again
   // - on each rank for each thread group.
   UG_Mesh mesh = { };
   if (ipc_rank_index() == 0) {
-    Arena_Temp scratch = scratch_start(0);
+    Arena partition_arena = { };
+    arena_init(&partition_arena);
 
-    // NOTE(cmat): Load grid from file.
-    UG_Grid grid = { };
-
-    Str08 su2_file = str08_from_cstring((char *)sys_context()->command_line.argv[1]);
-    ugf_grid_init_from_su2(&grid, scratch.arena, su2_file);
-
-    // NOTE(cmat): Compute mesh based on grid: adjacency + geometry.
     UG_Mesh mesh_global = { };
-    ug_mesh_init_from_grid(&mesh_global, &grid, scratch.arena);
+
+    Arena_Temp scratch = { };
+    Scratch_Scope(&scratch, 0) {
+      // NOTE(cmat): Load grid from file.
+      UG_Grid grid = { };
+      Str08 su2_file = str08_from_cstring((char *)sys_context()->command_line.argv[1]);
+      ugf_grid_init_from_su2(&grid, scratch.arena, su2_file);
+
+      // NOTE(cmat): Compute mesh based on grid: adjacency + geometry.
+      ug_mesh_init_from_grid(&mesh_global, &grid, &partition_arena);
+    }
 
     // NOTE(cmat): Partition mesh by rank count.
     UG_Partition partition = { };
-    ug_partition_rcb(&partition, scratch.arena, &mesh_global, ipc_rank_count());
+    ug_partition_rcb(&partition, &partition_arena, &mesh_global, ipc_rank_count());
 
     UG_Mesh_Array mesh_array = { };
-    ug_mesh_array_init(&mesh_array, scratch.arena, partition.blocks_len);
+    ug_mesh_array_init(&mesh_array, &partition_arena, partition.blocks_len);
 
     // NOTE(cmat): Create sub-mesh for current rank
     // - Allocated on permanent, since we'll be using this one on this rank.
     ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(0, 1), &permanent_arena);
 
     // NOTE(cmat): Create sub-mesh for each other rank.
-    // - Allocated on scratch, since we'll free after distributing.
-    ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
+    // - Allocated on partition storage, since we'll free after distributing.
+    ug_mesh_array_from_partition(&mesh_array, &mesh_global, &partition, range1_u64(1, partition.blocks_len), &partition_arena);
 
     // NOTE(cmat): Compute cells to send between block for rank 0 mesh (permanent storage).
     ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(0, 1), &permanent_arena);
 
-    // NOTE(cmat): Compute cells to send between block for the other ranks (scratch storage).
-    ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(1, partition.blocks_len), scratch.arena);
+    // NOTE(cmat): Compute cells to send between block for the other ranks (partition storage).
+    ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(1, partition.blocks_len), &partition_arena);
 
     // NOTE(cmat): Reoder cells by groups: Interior or boundary. [ interior cells | boundary cells ]
     // - This allows us to compute interior cells while waiting for halo cells to be distributed,
@@ -91,7 +92,7 @@ function void redsim_group_entry(void *user_data) {
     mesh = mesh_array.dat[0];
 
     lane_barrier();
-    scratch_end(&scratch);
+    arena_destroy(&partition_arena);
   } else {
     ug_mesh_ipc_receive(&permanent_arena, &mesh, 0);
   }
@@ -121,7 +122,7 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Initial condition.
   lane_barrier();
   log_info("Initializing flow to SOD condition");
-  fl_setup_sod(&solver.flow, &mesh);
+  fl_setup_sod(&solver.flow_1, &mesh);
 
   // NOTE(cmat): Iterate and solve.
   lane_barrier();
