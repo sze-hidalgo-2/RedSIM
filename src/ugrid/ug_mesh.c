@@ -437,8 +437,8 @@ function void ug_mesh_compute_cells_gradient(UG_Mesh *mesh, Arena *arena) {
     mesh->cells.gradients = arena_push_count(arena, UG_Cell_Gradient, mesh->cells.len);
   }
 
-  lane_broadcast_ptr(mesh->cells.gradients, 0);
-
+  lane_broadcast_ptr(&mesh->cells.gradients, 0);
+#if 0
   for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
     UG_Cell_Faces     *faces = &mesh->cells.faces     [it_cell];
     UG_Cell_Gradient  *grad  = &mesh->cells.gradients [it_cell];
@@ -478,7 +478,8 @@ function void ug_mesh_compute_cells_gradient(UG_Mesh *mesh, Arena *arena) {
     grad->inv_A_yz  = (A_xz * A_xy - A_xx * A_yz) * determinant_rcp;
     grad->inv_A_zz  = (A_xx * A_yy - A_xy * A_xy) * determinant_rcp;
   }
-
+#endif
+  lane_barrier();
   profiler_end_function();
 }
 

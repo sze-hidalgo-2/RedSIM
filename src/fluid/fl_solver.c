@@ -122,8 +122,7 @@ function void fl_solver_compute_ghost(FL_Solver_Euler *euler, FL_State *state) {
 function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State *state, FL_State *residual, Range1_U64 range, F64 *time_steps) {
   profiler_begin_function();
   U64 range_len = range1_u64_len(range);
-
-  UG_Mesh  *mesh     = euler->mesh;
+  UG_Mesh *mesh = euler->mesh;
 
   U64 bucket_index = lane_index();
   for Iter_Range(it_range, lane_range(range_len)) {
@@ -159,6 +158,22 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
   lane_barrier();
   profiler_end_function();
 }
+#if 0
+function void fl_solver_euler_compute_gradient_range(FL_Solver_Euler *euler, FL_State *state, Range1_U64 range) {
+  profiler_begin_function();
+  U64 range_len = range1_u64_len(range);
+  UG_Mesh *mesh = euler->mesh;
+
+  for Iter_Range(it_range, lane_range(range1_u64_len(range))) {
+    U64 it_cell         = range.min + it_range;
+    UG_Cell_Faces faces = mesh->cells.faces[it_cell];
+    V3F centroid_cell   = mesh->cells.centroid[it_cell];
+  }
+
+  lane_barrier();
+  profiler_end_function();
+}
+#endif
 
 function F64 fl_solver_compute_time_step(FL_Solver_Euler *euler, F64 *time_steps) {
   profiler_begin_function();

@@ -1,0 +1,23 @@
+#mesh
+file        :: "cube_4M.su2"
+
+#solver
+integrator  :: "ssprk-4-3"
+limiter     :: "barth-jespersen"
+
+#simulaion
+time        :: 0.2
+
+#boundary
+"x-min"     ::  "slip"
+"y-min"     ::  "slip"
+"z-min"     ::  "slip"
+"x-max"     ::  "slip"
+"y-max"     ::  "slip"
+"z-max"     ::  "slip"
+
+#probe_line
+min         :: [-1, 0, 0]
+max         :: [+1, 0, 0]
+subdivision :: 100
+
