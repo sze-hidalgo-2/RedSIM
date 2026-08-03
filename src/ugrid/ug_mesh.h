@@ -22,12 +22,12 @@ typedef struct UG_Cell_Faces {
 // Since the matrix is symmetric, we only store the upper-right and diagonal
 // of the precomputed inverse.
 typedef struct UG_Cell_Gradient {
-  F32 inv_xx;
-  F32 inv_xy;
-  F32 inv_xz;
-  F32 inv_yy;
-  F32 inv_yz;
-  F32 inv_zz;
+  F32 inv_A_xx;
+  F32 inv_A_xy;
+  F32 inv_A_xz;
+  F32 inv_A_yy;
+  F32 inv_A_yz;
+  F32 inv_A_zz;
 } UG_Cell_Gradient;
 
 typedef struct UG_Cells {
@@ -83,6 +83,7 @@ struct UG_Partition;
 function void     ug_mesh_init_from_grid              (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
 function void     ug_mesh_optimize_reorder            (UG_Mesh *mesh, Range1_U64 range);
 function void     ug_mesh_reorder_by_groups           (UG_Mesh *mesh);
+function void     ug_mesh_compute_cells_gradient      (UG_Mesh *mesh, Arena *arena);
 
 function void     ug_mesh_array_init                  (UG_Mesh_Array *mesh_array, Arena *arena, U32 len);
 function void     ug_mesh_array_from_partition        (UG_Mesh_Array *mesh_array, UG_Mesh *global_mesh, struct UG_Partition *partition, Range1_U64 range, Arena *arena);

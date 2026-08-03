@@ -86,6 +86,9 @@ function void redsim_group_entry(void *user_data) {
 
   // NOTE(cmat): Now, each rank has its own mesh.
 
+  // NOTE(cmat): Compute gradients for each cell.
+  ug_mesh_compute_cells_gradient(&mesh, &permanent_arena);
+
   // NOTE(cmat): Reoder cells by groups: Interior or boundary. [ interior cells | boundary cells ]
   // - This allows us to compute interior cells while waiting for halo cells to be distributed,
   // - needed only by boundary cells.

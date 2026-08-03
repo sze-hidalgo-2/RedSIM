@@ -2,7 +2,6 @@ struct UG_Cell_Faces_Verts;
 function void ug_mesh_compute_cells                   (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
 function void ug_mesh_compute_cells_faces             (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
 function void ug_mesh_compute_cells_faces_ghosts      (UG_Mesh *mesh, UG_Grid *grid, struct UG_Cell_Faces_Verts *faces_verts);
-function void ug_mesh_compute_cells_gradients         (UG_Mesh *mesh, Arena *arena);
 
 // ------------------------------------------------------------
 // #-- Initialization
@@ -12,7 +11,6 @@ function void ug_mesh_init_from_grid(UG_Mesh *mesh, UG_Grid *grid, Arena *arena)
   Log_Zone_Scope("Computing mesh from grid") {
     ug_mesh_compute_cells               (mesh, grid, arena);  // NOTE(cmat): Compute cell geometric data.
     ug_mesh_compute_cells_faces         (mesh, grid, arena);  // NOTE(cmat): Compute cell adjacency.
-    // ug_mesh_compute_cells_gradients     (mesh, arena);       // NOTE(cmat): Compute cell gradients.
   }
 
   profiler_end_function();
@@ -427,6 +425,60 @@ function void ug_mesh_compute_cells_faces_ghosts(UG_Mesh *mesh, UG_Grid *grid, U
   lane_barrier();
   log_zone_end();
   scratch_end(&scratch);
+  profiler_end_function();
+}
+
+// ------------------------------------------------------------
+// #-- Gradients
+function void ug_mesh_compute_cells_gradient(UG_Mesh *mesh, Arena *arena) {
+  profiler_begin_function();
+
+  if (lane_index() == 0) {
+    mesh->cells.gradients = arena_push_count(arena, UG_Cell_Gradient, mesh->cells.len);
+  }
+
+  lane_broadcast_ptr(mesh->cells.gradients, 0);
+
+  for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
+    UG_Cell_Faces     *faces = &mesh->cells.faces     [it_cell];
+    UG_Cell_Gradient  *grad  = &mesh->cells.gradients [it_cell];
+
+    F32 A_xx = 0;
+    F32 A_xy = 0;
+    F32 A_xz = 0;
+    F32 A_yy = 0;
+    F32 A_yz = 0;
+    F32 A_zz = 0;
+
+    V3F centroid = mesh->cells.center[it_cell];
+    for Iter_Index(it_face, 4) {
+      U32 adjacent          = faces->adjacent[it_face];
+      V3F centroid_adjacent = mesh->cells.center[adjacent];
+      V3F dx                = v3f_sub(centroid_adjacent, centroid);
+      F32 weight            = f32_div_safe(1.f, v3f_len2(dx));
+
+      A_xx += weight * dx.x * dx.x;
+      A_xy += weight * dx.x * dx.y;
+      A_xz += weight * dx.x * dx.z;
+      A_yy += weight * dx.y * dx.y;
+      A_yz += weight * dx.y * dx.z;
+      A_zz += weight * dx.z * dx.z;
+    }
+
+    F32 determinant = + A_xx * (A_yy * A_zz - A_yz * A_yz)
+                      - A_xy * (A_xy * A_zz - A_yz * A_xz)
+                      + A_xz * (A_xy * A_yz - A_yy * A_xz);
+
+    F32 determinant_rcp = f32_div_safe(1.f, determinant);
+
+    grad->inv_A_xx  = (A_yy * A_zz - A_yz * A_yz) * determinant_rcp;
+    grad->inv_A_xy  = (A_xz * A_yz - A_xy * A_zz) * determinant_rcp;
+    grad->inv_A_xz  = (A_xy * A_yz - A_xz * A_yy) * determinant_rcp;
+    grad->inv_A_yy  = (A_xx * A_zz - A_xz * A_xz) * determinant_rcp;
+    grad->inv_A_yz  = (A_xz * A_xy - A_xx * A_yz) * determinant_rcp;
+    grad->inv_A_zz  = (A_xx * A_yy - A_xy * A_xy) * determinant_rcp;
+  }
+
   profiler_end_function();
 }
 
