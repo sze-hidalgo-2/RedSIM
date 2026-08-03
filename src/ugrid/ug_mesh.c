@@ -2,6 +2,7 @@ struct UG_Cell_Faces_Verts;
 function void ug_mesh_compute_cells                   (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
 function void ug_mesh_compute_cells_faces             (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
 function void ug_mesh_compute_cells_faces_ghosts      (UG_Mesh *mesh, UG_Grid *grid, struct UG_Cell_Faces_Verts *faces_verts);
+function void ug_mesh_compute_cells_gradients         (UG_Mesh *mesh, Arena *arena);
 
 // ------------------------------------------------------------
 // #-- Initialization
@@ -11,6 +12,7 @@ function void ug_mesh_init_from_grid(UG_Mesh *mesh, UG_Grid *grid, Arena *arena)
   Log_Zone_Scope("Computing mesh from grid") {
     ug_mesh_compute_cells               (mesh, grid, arena);  // NOTE(cmat): Compute cell geometric data.
     ug_mesh_compute_cells_faces         (mesh, grid, arena);  // NOTE(cmat): Compute cell adjacency.
+    // ug_mesh_compute_cells_gradients     (mesh, arena);       // NOTE(cmat): Compute cell gradients.
   }
 
   profiler_end_function();

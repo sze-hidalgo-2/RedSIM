@@ -71,19 +71,6 @@ function void redsim_group_entry(void *user_data) {
     // NOTE(cmat): Compute cells to send between block for the other ranks (partition storage).
     ug_mesh_array_compute_sends(&mesh_array, &partition, range1_u64(1, partition.blocks_len), &partition_arena);
 
-    // NOTE(cmat): Reoder cells by groups: Interior or boundary. [ interior cells | boundary cells ]
-    // - This allows us to compute interior cells while waiting for halo cells to be distributed,
-    // - needed only by boundary cells.
-    for Iter_Index(it, mesh_array.len) {
-      ug_mesh_reorder_by_groups(&mesh_array.dat[it]);
-    }
-
-    // NOTE(cmat): Reorder every group in the mesh to improve cache locality.
-    for Iter_Index(it, mesh_array.len) {
-      ug_mesh_optimize_reorder(&mesh_array.dat[it], mesh_array.dat[it].groups.cells_interior);
-      ug_mesh_optimize_reorder(&mesh_array.dat[it], mesh_array.dat[it].groups.cells_boundary);
-    }
-
     // NOTE(cmat): Broadcast mesh array to all ranks.
     ug_mesh_ipc_distribute(&mesh_array);
 
@@ -96,6 +83,17 @@ function void redsim_group_entry(void *user_data) {
   } else {
     ug_mesh_ipc_receive(&permanent_arena, &mesh, 0);
   }
+
+  // NOTE(cmat): Now, each rank has its own mesh.
+
+  // NOTE(cmat): Reoder cells by groups: Interior or boundary. [ interior cells | boundary cells ]
+  // - This allows us to compute interior cells while waiting for halo cells to be distributed,
+  // - needed only by boundary cells.
+  ug_mesh_reorder_by_groups(&mesh);
+
+  // NOTE(cmat): Reorder every group in the mesh to improve cache locality.
+  ug_mesh_optimize_reorder(&mesh, mesh.groups.cells_interior);
+  ug_mesh_optimize_reorder(&mesh, mesh.groups.cells_boundary);
 
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};

@@ -18,11 +18,24 @@ typedef struct UG_Cell_Faces {
   F32 normal_z  [4];
 } UG_Cell_Faces;
 
+// NOTE(cmat): Gradient computation with Least-Squares reconstruction.
+// Since the matrix is symmetric, we only store the upper-right and diagonal
+// of the precomputed inverse.
+typedef struct UG_Cell_Gradient {
+  F32 inv_xx;
+  F32 inv_xy;
+  F32 inv_xz;
+  F32 inv_yy;
+  F32 inv_yz;
+  F32 inv_zz;
+} UG_Cell_Gradient;
+
 typedef struct UG_Cells {
-  U64            len;
-  V3F           *center;
-  F32           *volume;
-  UG_Cell_Faces *faces;
+  U64                len;
+  V3F               *center;
+  F32               *volume;
+  UG_Cell_Faces     *faces;
+  UG_Cell_Gradient  *gradients;
 } UG_Cells;
 
 typedef struct UG_Halos {
