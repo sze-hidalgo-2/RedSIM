@@ -261,18 +261,28 @@ function void ipc_rank_record_receive(IPC_Request_List *request_list, U64 bytes_
   profiler_end_function();
 }
 
-function F64 ipc_rank_minimum(F64 value) {
+function F64 ipc_rank_minimum_f64(F64 value) {
   profiler_begin_function();
 
   F64 result = 0;
   if (lane_index() == 0) {
-      MPI_Allreduce(&value, &result, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+    MPI_Allreduce(&value, &result, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
   }
 
   lane_broadcast_u64((U64 *)&result, 0);
   profiler_end_function();
-
   return result;
+}
+
+function void ipc_rank_gather_all_u64(U64 value, U64 *values_all) {
+  profiler_begin_function();
+
+  if (lane_index() == 0) {
+    MPI_Allgather(&value, sizeof(U64), MPI_BYTE, values_all, sizeof(U64), MPI_BYTE, MPI_COMM_WORLD);
+  }
+
+  lane_barrier();
+  profiler_end_function();
 }
 
 function void log_ipc_context(void) {

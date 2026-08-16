@@ -34,7 +34,8 @@ function void     ipc_rank_request_list_start   (IPC_Request_List *request_list)
 function void     ipc_rank_request_list_wait    (IPC_Request_List *request_list);
 function void     ipc_rank_record_send          (IPC_Request_List *request_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag);
 function void     ipc_rank_record_receive       (IPC_Request_List *request_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag);
-function F64      ipc_rank_minimum              (F64 value);
+function F64      ipc_rank_minimum_f64          (F64 value);
+function void     ipc_rank_gather_all_u64       (U64 value, U64 *values_all);
 
 #define IPC_Request_Scope(request_list_) \
   Defer_Scope(ipc_rank_request_list_start(request_list_), ipc_rank_request_list_wait(request_list_))

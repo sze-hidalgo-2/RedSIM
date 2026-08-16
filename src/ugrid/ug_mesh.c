@@ -6,11 +6,11 @@ function void ug_mesh_compute_cells_faces_ghosts      (UG_Mesh *mesh, UG_Grid *g
 // ------------------------------------------------------------
 // #-- Initialization
 
-function void ug_mesh_init_from_grid(UG_Mesh *mesh, UG_Grid *grid, Arena *arena) {
+function void ug_mesh_init_from_grid(UG_Mesh *mesh, Arena *arena) {
   profiler_begin_function();
   Log_Zone_Scope("Computing mesh from grid") {
-    ug_mesh_compute_cells               (mesh, grid, arena);  // NOTE(cmat): Compute cell geometric data.
-    ug_mesh_compute_cells_faces         (mesh, grid, arena);  // NOTE(cmat): Compute cell adjacency.
+    ug_mesh_compute_cells       (mesh, &mesh->grid, arena);  // NOTE(cmat): Compute cell geometric data.
+    ug_mesh_compute_cells_faces (mesh, &mesh->grid, arena);  // NOTE(cmat): Compute cell adjacency.
   }
 
   profiler_end_function();
@@ -159,7 +159,7 @@ function void ug_mesh_compute_cells_faces(UG_Mesh *mesh, UG_Grid *grid, Arena *a
 
   U64 *duplicate_count_global = 0;
   if (lane_index() == 0) {
-    duplicate_count_global = (U64 *)arena_push_count(scratch.arena, U64, lane_count());
+    duplicate_count_global = arena_push_count(scratch.arena, U64, lane_count());
   }
 
   lane_broadcast_ptr(&duplicate_count_global, 0);
@@ -181,7 +181,7 @@ function void ug_mesh_compute_cells_faces(UG_Mesh *mesh, UG_Grid *grid, Arena *a
 
   lane_broadcast_u64(&duplicate_count, 0);
 
-  U32 faces_len = faces_all_len - duplicate_count;
+  U64 faces_len = faces_all_len - duplicate_count;
   log_info("Face count: %'llu", faces_len);
 
   mesh->ghosts.len = faces_all_len - 2 * duplicate_count;
@@ -430,6 +430,7 @@ function void ug_mesh_compute_cells_faces_ghosts(UG_Mesh *mesh, UG_Grid *grid, U
 
 // ------------------------------------------------------------
 // #-- Gradients
+
 function void ug_mesh_compute_cells_gradient(UG_Mesh *mesh, Arena *arena) {
   profiler_begin_function();
 
@@ -485,6 +486,111 @@ function void ug_mesh_compute_cells_gradient(UG_Mesh *mesh, Arena *arena) {
 
 // ------------------------------------------------------------
 // #-- Mesh Partitioning
+
+function void ug_mesh_from_sub_mesh_grid(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Partition *partition, U32 block_index, Arena *arena) {
+  profiler_begin_function();
+  Arena_Temp scratch = scratch_start(arena);
+
+  U64  vert_all_len  = 4 * mesh->cells.len;
+  V2U *vert_all_keys = 0;
+  if (lane_index() == 0) {
+    vert_all_keys = arena_push_count(scratch.arena, V2U, vert_all_len);
+  }
+
+  lane_broadcast_ptr(&vert_all_keys, 0);
+
+  for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
+    for Iter_Index(it_vert, 4) {
+      U32 cell_global                      = partition->blocks_dat[block_index].cells_dat[it_cell];
+      U32 vert_index                       = mesh_global->grid.elems.verts[cell_global].dat[it_vert];
+      vert_all_keys[4 * it_cell + it_vert] = v2u(vert_index, 4 * it_cell + it_vert);
+    }
+  }
+
+  lane_barrier();
+
+  // NOTE(cmat): Sort by vertex index.
+  array_sort_radix_u32(vert_all_len, 2, 0, (U32 *)vert_all_keys);
+
+  // NOTE(cmat): Count unique verts.
+  U64 *global_vert_len = 0;
+  if (lane_index() == 0) {
+    global_vert_len = arena_push_count(scratch.arena, U64, lane_count());
+  }
+
+  lane_broadcast_ptr(&global_vert_len, 0);
+
+  U64 *local_vert_len = global_vert_len + lane_index();
+  *local_vert_len = 0;
+
+  Range1_U64 vert_all_range = lane_range(vert_all_len);
+
+  for Iter_Range(vert_it, vert_all_range) {
+    B32 is_first = (vert_it == 0 || vert_all_keys[vert_it - 1].x != vert_all_keys[vert_it].x);
+    *local_vert_len += is_first;
+  }
+
+  lane_barrier();
+
+  U64 vert_len = 0;
+  if (lane_index() == 0) {
+    for Iter_Index(it, lane_count()) {
+      vert_len += global_vert_len[it];
+    }
+  }
+
+  lane_broadcast_u64(&vert_len, 0);
+  log_info("Local vertex count: %'llu", vert_len);
+
+  // NOTE(cmat): Allocate new grid.
+  mesh->grid.verts.len    = vert_len;
+  mesh->grid.elems.len    = mesh->cells.len;
+  mesh->grid.markers.len  = 0;
+  if (lane_index() == 0) {
+    mesh->grid.verts.x     = arena_push_count(arena, F32, vert_len);
+    mesh->grid.verts.y     = arena_push_count(arena, F32, vert_len);
+    mesh->grid.verts.z     = arena_push_count(arena, F32, vert_len);
+    mesh->grid.elems.verts = arena_push_count(arena, V4U, mesh->cells.len);
+  }
+
+  lane_broadcast_type(&mesh->grid, 0);
+
+  // NOTE(cmat): Compute vertex offset.
+  U64 local_vert_offset = 0;
+  for Iter_Index(it, lane_index()) {
+    local_vert_offset += global_vert_len[it];
+  }
+
+  // NOTE(cmat): Fill grid with new vertex values.
+  U64 local_vert_index = local_vert_offset;
+  for Iter_Range(vert_it, vert_all_range) {
+    U32 global_vert_index = vert_all_keys[vert_it].x;
+    B32 is_first = (vert_it == 0 || vert_all_keys[vert_it - 1].x != global_vert_index);
+
+    U64 new_local_vert_index = 0;
+    if (is_first) {
+      new_local_vert_index = local_vert_index;
+      local_vert_index += 1;
+
+      mesh->grid.verts.x[new_local_vert_index] = mesh_global->grid.verts.x[global_vert_index];
+      mesh->grid.verts.y[new_local_vert_index] = mesh_global->grid.verts.y[global_vert_index];
+      mesh->grid.verts.z[new_local_vert_index] = mesh_global->grid.verts.z[global_vert_index];
+    } else {
+      new_local_vert_index = local_vert_index - 1;
+    }
+
+    U32 cell_vert   = vert_all_keys[vert_it].y;
+    U32 cell_local  = cell_vert / 4;
+    U32 vert_local  = cell_vert % 4;
+
+    // NOTE(cmat): Convert from global to local element coordinates.
+    mesh->grid.elems.verts[cell_local].dat[vert_local] = new_local_vert_index;
+  }
+
+  lane_barrier();
+  scratch_end(&scratch);
+  profiler_end_function();
+}
 
 #pragma pack(push, 1)
   typedef struct UG_Halo_key {
@@ -823,7 +929,8 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
     }
   }
  
-  // NOTE(cmat): Fill in sends.
+  // NOTE(cmat): Compute local grid data.
+  ug_mesh_from_sub_mesh_grid(mesh, mesh_global, partition, block_index, arena);
 
   lane_barrier();
   scratch_end(&scratch);
@@ -933,6 +1040,12 @@ function void ug_mesh_ipc_distribute(UG_Mesh_Array *mesh_array) {
       
       // NOTE(cmat): Communicate lengths.
       ipc_rank_record_send(&request_list, sizeof(UG_Mesh), mesh, rank, 0);
+
+      // NOTE(cmat): UG_Grid
+      ipc_rank_record_send(&request_list, mesh->grid.verts.len * sizeof(F32), mesh->grid.verts.x,     rank, 0);
+      ipc_rank_record_send(&request_list, mesh->grid.verts.len * sizeof(F32), mesh->grid.verts.y,     rank, 0);
+      ipc_rank_record_send(&request_list, mesh->grid.verts.len * sizeof(F32), mesh->grid.verts.z,     rank, 0);
+      ipc_rank_record_send(&request_list, mesh->grid.elems.len * sizeof(V4U), mesh->grid.elems.verts, rank, 0);
       
       // NOTE(cmat): UG_Cells
       ipc_rank_record_send(&request_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
@@ -975,8 +1088,15 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
 
   // NOTE(cmat): Allocate data based on received sizes.
 
-  // NOTE(cmat): UG_Cells
   if (lane_index() == 0) {
+
+    // NOTE(cmat): UG_Grid
+    mesh->grid.verts.x        = arena_push_count(arena, F32,            mesh->grid.verts.len);
+    mesh->grid.verts.y        = arena_push_count(arena, F32,            mesh->grid.verts.len);
+    mesh->grid.verts.z        = arena_push_count(arena, F32,            mesh->grid.verts.len);
+    mesh->grid.elems.verts    = arena_push_count(arena, V4U,            mesh->grid.elems.len);
+
+    // NOTE(cmat): UG_Cells
     mesh->cells.center        = arena_push_count(arena, V3F,            mesh->cells.len);
     mesh->cells.volume        = arena_push_count(arena, F32,            mesh->cells.len);
     mesh->cells.faces         = arena_push_count(arena, UG_Cell_Faces,  mesh->cells.len);
@@ -999,6 +1119,12 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
 
   IPC_Request_List request_data_list = { };
   ipc_rank_request_list_init(&request_data_list);
+
+  // NOTE(cmat): UG_Grid
+  ipc_rank_record_receive(&request_data_list, mesh->grid.verts.len * sizeof(F32),         mesh->grid.verts.x,         rank, 0);
+  ipc_rank_record_receive(&request_data_list, mesh->grid.verts.len * sizeof(F32),         mesh->grid.verts.y,         rank, 0);
+  ipc_rank_record_receive(&request_data_list, mesh->grid.verts.len * sizeof(F32),         mesh->grid.verts.z,         rank, 0);
+  ipc_rank_record_receive(&request_data_list, mesh->grid.elems.len * sizeof(V4U),         mesh->grid.elems.verts,     rank, 0);
 
   // NOTE(cmat): UG_Cells
   ipc_rank_record_receive(&request_data_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
@@ -1091,6 +1217,9 @@ function void ug_mesh_optimize_reorder(UG_Mesh *mesh, Range1_U64 range) {
 
   // NOTE(cmat): Reorder elements.
   lane_barrier();
+
+  // NOTE(cmat): Reorder grid elements
+  array_reorder_key_u64(range_len,  sizeof(V4U), sizeof(V4U), (U08 *)(mesh->grid.elems.verts + range.min), sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
 
   // NOTE(cmat): Reorder centers.
   array_reorder_key_u64(range_len,  sizeof(V3F), sizeof(V3F), (U08 *)(mesh->cells.center + range.min), sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
@@ -1247,6 +1376,9 @@ function void ug_mesh_reorder_by_groups(UG_Mesh *mesh) {
 
   // NOTE(cmat): Reorder elements.
   lane_barrier();
+
+  // NOTE(cmat): Reorder grid elements
+  array_reorder_key_u32(mesh->cells.len,  sizeof(V4U), sizeof(V4U), (U08 *)(mesh->grid.elems.verts), sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
 
   // NOTE(cmat): Reorder centers.
   array_reorder_key_u32(mesh->cells.len,  sizeof(V3F),  sizeof(V3F), (U08 *)(mesh->cells.center), sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);

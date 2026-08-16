@@ -1,6 +1,8 @@
 #include "alice/core/core_build.h"
 #include "alice/core/core_build.c"
 
+#include "alice/linux/linux_system.c"
+
 #include "ipc/ipc_build.h"
 #include "ipc/ipc_build.c"
 
@@ -13,14 +15,8 @@
 #include "fluid/fl_build.h"
 #include "fluid/fl_build.c"
 
-#if 0
-
 #include "fluid_format/flf_build.h"
 #include "fluid_format/flf_build.c"
-
-#endif
-
-#include "alice/linux/linux_system.c"
 
 function void redsim_group_entry(void *user_data) {
   profiler_begin_function();
@@ -39,16 +35,12 @@ function void redsim_group_entry(void *user_data) {
 
     UG_Mesh mesh_global = { };
 
-    Arena_Temp scratch = { };
-    Scratch_Scope(&scratch, 0) {
-      // NOTE(cmat): Load grid from file.
-      UG_Grid grid = { };
-      Str08 su2_file = str08_from_cstring((char *)sys_context()->command_line.argv[1]);
-      ugf_grid_init_from_su2(&grid, scratch.arena, su2_file);
+    // NOTE(cmat): Load grid from file.
+    Str08 su2_file = str08_from_cstring((char *)sys_context()->command_line.argv[1]);
+    ugf_grid_init_from_su2(&mesh_global.grid, &partition_arena, su2_file);
 
-      // NOTE(cmat): Compute mesh based on grid: adjacency + geometry.
-      ug_mesh_init_from_grid(&mesh_global, &grid, &partition_arena);
-    }
+    // NOTE(cmat): Compute mesh based on grid: adjacency + geometry.
+    ug_mesh_init_from_grid(&mesh_global, &partition_arena);
 
     // NOTE(cmat): Partition mesh by rank count.
     UG_Partition partition = { };
@@ -87,7 +79,7 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Now, each rank has its own mesh.
 
   // NOTE(cmat): Compute gradients for each cell.
-  ug_mesh_compute_cells_gradient(&mesh, &permanent_arena);
+  // ug_mesh_compute_cells_gradient(&mesh, &permanent_arena);
 
   // NOTE(cmat): Reoder cells by groups: Interior or boundary. [ interior cells | boundary cells ]
   // - This allows us to compute interior cells while waiting for halo cells to be distributed,
@@ -100,18 +92,31 @@ function void redsim_group_entry(void *user_data) {
 
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
+
+  FL_Boundary_Farfield farfield = {
+    .density  = 1.2f,
+    .velocity = 5.f,
+    .pressure = 1.0e5f,
+  };
   
   // NOTE(cmat): Init boundary map.
 
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
+
+#if 1
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 3) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 4) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 5) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+#else
+    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+#endif
   }
 
   // NOTE(cmat): Init solver.
@@ -123,7 +128,11 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Initial condition.
   lane_barrier();
   log_info("Initializing flow to SOD condition");
+#if 1
   fl_setup_sod(&solver.flow_1, &mesh);
+#else
+  fl_state_set_inner_from_farfield(&solver.flow_1, &farfield);
+#endif
 
   // NOTE(cmat): Iterate and solve.
   lane_barrier();
@@ -131,6 +140,12 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Synchronize all MPI ranks for more accurate
   // - benchmarking measurements for load balacing.
   fl_solver_euler_solve(&solver);
+
+  // NOTE(cmat): Export results.
+  FLF_Ensight_Export export = { };
+  flf_ensight_export_start(&export, str08_lit("sod"), &mesh, &permanent_arena);
+  flf_ensight_export_flow(&export, 0.0f, &solver.flow_1);
+  flf_ensight_export_end(&export);
 
   log_zone_end();
   profiler_end_function();
@@ -180,11 +195,11 @@ link_function void sys_entry_point(void) {
   ipc_init();
 
   // NOTE(cmat): Check if RedSIM was launched correctly.
-#if 0
   if (sys_numa_layout()->nodes_len > 1 && ipc_rank_local_node_count() != sys_numa_layout()->nodes_len) {
-    sys_panic(str08_lit("Rank count per compute node does not match NUMA domain count."));
+    if (ipc_rank_count() != ipc_rank_local_node_count()) {
+      sys_panic(str08_lit("Rank count per compute node does not match NUMA domain count."));
+    }
   }
-#endif
 
   // NOTE(cmat): Bind main thread to appropriate NUMA node and cpu within that node.
   SYS_CPU bind_to_cpu = 0;

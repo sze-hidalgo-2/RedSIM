@@ -1,6 +1,3 @@
-global const U32 UG_Cell_Invalid = u32_limit_max;
-global const U08 UG_Face_Invalid = u08_limit_max;
-
 typedef struct UG_Grid_Marker_Elems {
   U64  len;
   V3U *verts;

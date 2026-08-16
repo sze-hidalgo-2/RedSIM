@@ -116,6 +116,7 @@ function void fl_solver_compute_ghost(FL_Solver_Euler *euler, FL_State *state) {
     fl_state_set(state, flow_ghost_index, ghost_state);
   }
 
+  lane_barrier();
   profiler_end_function();
 }
 
@@ -207,6 +208,7 @@ function void fl_solver_euler_step(FL_Solver_Euler *euler, FL_State *state_dst, 
     }
   }
 
+  lane_barrier();
   profiler_end_function();
 }
 
@@ -225,6 +227,7 @@ function void fl_solver_euler_step_2(FL_Solver_Euler *euler, FL_State *state_dst
     }
   }
 
+  lane_barrier();
   profiler_end_function();
 }
 
@@ -269,7 +272,7 @@ function F64 fl_solver_euler_solve_step_forward_euler(FL_Solver_Euler *euler, F3
   F64 time_step = fl_solver_compute_time_step(euler, euler->time_steps_dat);
 
   // NOTE(cmat): Synchronize minimum time_step across IPC ranks.
-  time_step = ipc_rank_minimum(time_step);
+  time_step = ipc_rank_minimum_f64(time_step);
 
   // NOTE(cmat): Multiply time_step by CFL.
   time_step *= CFL;
@@ -303,7 +306,7 @@ function F64 fl_solver_euler_solve_step_SSP_RK_4_3(FL_Solver_Euler *euler, F32 C
   F64 time_step = fl_solver_compute_time_step(euler, euler->time_steps_dat);
 
   // NOTE(cmat): Synchronize minimum time_step across IPC ranks.
-  time_step = ipc_rank_minimum(time_step);
+  time_step = ipc_rank_minimum_f64(time_step);
 
   // NOTE(cmat): Multiply time_step by CFL.
   time_step *= CFL;
@@ -340,7 +343,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
 
   // NOTE(cmat): 10 warmup iterations.
   for Iter_Index(it, 10) {
-    fl_solver_euler_solve_step_SSP_RK_4_3(euler, 0.f);
+    // fl_solver_euler_solve_step_SSP_RK_4_3(euler, 0.f);
   }
 
   // NOTE(cmat): Synchronize all ranks, for more accurate benchmarking.
@@ -351,12 +354,13 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
 
   // NOTE(cmat): Iterate.
   F64 time        = 0;
-  F64 time_target = 0.001f;
-  for Iter_Index(it, 500) {
+  F64 time_target = 0.2f;
+  // for Iter_Index(it, 100) {
+  while (time < time_target) {
     // F64 time_step = fl_solver_euler_solve_step_forward_euler(euler, CFL);
     F64 time_step = fl_solver_euler_solve_step_SSP_RK_4_3(euler, CFL);
     time         += time_step;
-    // log_info("Time: %.2g | Tau: %.2g", time, time_step);
+    log_info("Time: %.2g | Tau: %.2g", time, time_step);
   }
 
   lane_barrier();

@@ -66,6 +66,7 @@ typedef struct UG_Groups {
 
 typedef struct UG_Mesh {
   Range3_F32    bounds;
+  UG_Grid       grid;
   UG_Cells      cells;
   UG_Halos      halos;
   UG_Sends      sends;
@@ -80,7 +81,7 @@ typedef struct UG_Mesh_Array {
 
 struct UG_Partition;
 
-function void     ug_mesh_init_from_grid              (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
+function void     ug_mesh_init_from_grid              (UG_Mesh *mesh, Arena *arena);
 function void     ug_mesh_optimize_reorder            (UG_Mesh *mesh, Range1_U64 range);
 function void     ug_mesh_reorder_by_groups           (UG_Mesh *mesh);
 function void     ug_mesh_compute_cells_gradient      (UG_Mesh *mesh, Arena *arena);
