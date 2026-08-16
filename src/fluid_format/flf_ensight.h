@@ -5,6 +5,8 @@ typedef struct FLF_Ensight_Export {
 
   U64   timestep_count;
   U64  *part_cell_count;
+
+  Range1_U64 step_count_file_range;
 } FLF_Ensight_Export;
 
 

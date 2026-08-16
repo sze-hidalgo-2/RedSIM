@@ -131,7 +131,7 @@ force_inline function void flf_ensight_export_geo(Str08 geo_file_path, UG_Mesh *
   profiler_end_function();
 }
 
-function void flf_ensight_export_start(FLF_Ensight_Export *export, Str08 folder_path, UG_Mesh *mesh, Arena *arena) {
+function void flf_ensight_export_init(FLF_Ensight_Export *export, Str08 folder_path, UG_Mesh *mesh, Arena *arena) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(arena);
   log_zone_start("Starting ensight export: %S", folder_path);
@@ -166,7 +166,7 @@ function void flf_ensight_export_start(FLF_Ensight_Export *export, Str08 folder_
     if (ipc_rank_index() == 0) {
       SYS_File case_file = { };
       SYS_File_Scope(&case_file, export->case_file_path, SYS_File_Access_Flag_Create | SYS_File_Access_Flag_Truncate | SYS_File_Access_Flag_Write) {
-        Str08 format = str08_format(scratch.arena,
+        Str08 case_header = str08_format(scratch.arena,
           "FORMAT"                                                             "\n"
           "type: ensight gold"                                                 "\n"
 
@@ -182,17 +182,25 @@ function void flf_ensight_export_start(FLF_Ensight_Export *export, Str08 folder_
   
           "TIME"                                                               "\n"
           "time set: 1"                                                        "\n"
-          "number of steps: 1"                                                 "\n"
           "filename start number: 1"                                           "\n"
           "filename increment: 1"                                              "\n"
           "time values:"                                                       "\n"
-          "0.0"                                                                "\n"
-        );
+          "number of steps: ");
 
-        sys_file_write(&case_file, range1_u64(0, format.len), format.txt);
+        sys_file_write(&case_file, range1_u64(0, case_header.len), case_header.txt);
+        export->step_count_file_range = range1_u64(case_header.len, case_header.len + 24);
+
+        Str08 steps = str08_format(scratch.arena, "%24u", 0);
+        if (steps.len == range1_u64_len(export->step_count_file_range)) {
+          sys_file_write(&case_file, export->step_count_file_range, steps.txt);
+        } else {
+          log_fatal("Invalid step count string: %S. Got length %llu expected 24", steps, steps.len);
+        }
       }
     }
   }
+
+  lane_broadcast_type(export, 0);
   
   ipc_rank_barrier();
   lane_barrier();
@@ -296,13 +304,31 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, F32 time, FL_S
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[2 * cell_count + it] = f32_div_safe(state->rho_v3[it], state->rho[it]); }
 
   flf_ensight_export_cell_variable(export, str08_lit("velocity"), 3, variable_buffer);
+
+
+  // NOTE(cmat): Export new timestep.
+  // NOTE(cmat): First, we modify the number of steps.
+  if (lane_index() == 0 && ipc_rank_index() == 0) {
+    SYS_File case_file = { };
+    SYS_File_Scope(&case_file, export->case_file_path, SYS_File_Access_Flag_Write) {
+      Str08 steps = str08_format(scratch.arena, "%24u", (U32)export->timestep_count);
+      if (steps.len == range1_u64_len(export->step_count_file_range)) {
+        sys_file_write(&case_file, export->step_count_file_range, steps.txt);
+      } else {
+        log_fatal("Invalid step count string: %S. Got length %llu expected 24", steps, steps.len);
+      }
+    }
+
+    // NOTE(cmat): Next, we append the new timestep.
+    SYS_File_Scope(&case_file, export->case_file_path, SYS_File_Access_Flag_Write | SYS_File_Access_Flag_Append) {
+      Str08 time_step = str08_format(scratch.arena, "\n%.8g", time);
+      sys_file_write(&case_file, range1_u64(0, time_step.len), time_step.txt);
+    }
+  }
  
   lane_barrier();
   log_zone_end();
   scratch_end(&scratch);
   profiler_end_function();
-}
-
-function void flf_ensight_export_end(FLF_Ensight_Export *export) {
 }
 

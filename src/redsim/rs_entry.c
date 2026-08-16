@@ -137,15 +137,17 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Iterate and solve.
   lane_barrier();
 
-  // NOTE(cmat): Synchronize all MPI ranks for more accurate
-  // - benchmarking measurements for load balacing.
-  fl_solver_euler_solve(&solver);
-
   // NOTE(cmat): Export results.
   FLF_Ensight_Export export = { };
-  flf_ensight_export_start(&export, str08_lit("sod"), &mesh, &permanent_arena);
+  flf_ensight_export_init(&export, str08_lit("sod"), &mesh, &permanent_arena);
   flf_ensight_export_flow(&export, 0.0f, &solver.flow_1);
-  flf_ensight_export_end(&export);
+
+  F32 time = 0;
+  for Iter_Index(it, 10) {
+    fl_solver_euler_solve(&solver);
+    flf_ensight_export_flow(&export, time, &solver.flow_1);
+    time += 0.02f;
+  }
 
   log_zone_end();
   profiler_end_function();

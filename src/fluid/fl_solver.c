@@ -354,11 +354,11 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler) {
 
   // NOTE(cmat): Iterate.
   F64 time        = 0;
-  F64 time_target = 0.2f;
+  F64 time_target = 0.02f;
   // for Iter_Index(it, 100) {
   while (time < time_target) {
-    // F64 time_step = fl_solver_euler_solve_step_forward_euler(euler, CFL);
-    F64 time_step = fl_solver_euler_solve_step_SSP_RK_4_3(euler, CFL);
+    F64 time_step = fl_solver_euler_solve_step_forward_euler(euler, CFL);
+    // F64 time_step = fl_solver_euler_solve_step_SSP_RK_4_3(euler, CFL);
     time         += time_step;
     log_info("Time: %.2g | Tau: %.2g", time, time_step);
   }
