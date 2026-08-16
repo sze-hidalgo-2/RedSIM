@@ -198,9 +198,8 @@ link_function void sys_entry_point(void) {
 
   // NOTE(cmat): Check if RedSIM was launched correctly.
   if (sys_numa_layout()->nodes_len > 1 && ipc_rank_local_node_count() != sys_numa_layout()->nodes_len) {
-    if (ipc_rank_count() != ipc_rank_local_node_count()) {
-      sys_panic(str08_lit("Rank count per compute node does not match NUMA domain count."));
-    }
+    log_fatal("Rank count per compute node does not match NUMA domain count: numa = %llu | local ranks = %llu",
+              sys_numa_layout()->nodes_len, ipc_rank_local_node_count());
   }
 
   // NOTE(cmat): Bind main thread to appropriate NUMA node and cpu within that node.

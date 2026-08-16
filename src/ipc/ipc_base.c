@@ -91,7 +91,7 @@ function void ipc_init(void) {
     IPC_MPI_State.rank_index = (U32)rank_index;
 
     // NOTE(cmat): Build shared communicator.
-    MPI_Comm local_node_communicator = { };
+    MPI_Comm local_node_communicator = 0;
     MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &local_node_communicator);
 
     I32 rank_local_node_count = -1;
