@@ -93,10 +93,17 @@ function void redsim_group_entry(void *user_data) {
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
+  /*
+  FL_Boundary_Farfield farfield = {
+    .density  = 0.1249f,
+    .velocity = v3f(285.49f, -15.27f, 0.f),
+    .pressure = 10000.f,
+  };
+  */
   FL_Boundary_Farfield farfield = {
     .density  = 1.2f,
-    .velocity = 5.f,
-    .pressure = 1.0e5f,
+    .velocity = v3f(3.f, 4.f, 0.f),
+    .pressure = 10000.f,
   };
   
   // NOTE(cmat): Init boundary map.
@@ -105,7 +112,7 @@ function void redsim_group_entry(void *user_data) {
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
 
-#if 1
+#if 0
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
@@ -113,9 +120,21 @@ function void redsim_group_entry(void *user_data) {
     *fl_boundary_map_by_index(&boundary, 4) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 5) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
 #else
+
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+
+    /*
+    // NOTE(cmat): WING
+    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+
+    // NOTE(cmat): SYMMETRY
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+
+    // NOTE(cmat): FARFIELD
+    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
+    */
 #endif
   }
 
@@ -128,7 +147,7 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Initial condition.
   lane_barrier();
   log_info("Initializing flow to SOD condition");
-#if 1
+#if 0
   fl_setup_sod(&solver.flow_1, &mesh);
 #else
   fl_state_set_inner_from_farfield(&solver.flow_1, &farfield);
@@ -143,10 +162,10 @@ function void redsim_group_entry(void *user_data) {
   flf_ensight_export_flow(&export, 0.0f, &solver.flow_1);
 
   F32 time = 0;
-  for Iter_Index(it, 10) {
-    fl_solver_euler_solve(&solver);
+  for Iter_Index(it, 500) {
+    fl_solver_euler_solve(&solver, 0.1f);
+    time += 0.1f;
     flf_ensight_export_flow(&export, time, &solver.flow_1);
-    time += 0.02f;
   }
 
   log_zone_end();
@@ -177,7 +196,7 @@ link_function void redsim_entry_point(void) {
     Thread_Group thread_group = { };
     log_info("Launching global thread group with %u threads", thread_count);
 
-    thread_group_init     (&thread_group, str08_lit("Sim_Group"), thread_count);
+    thread_group_init(&thread_group, str08_lit("Sim_Group"), thread_count);
 
     U64 numa_index = 0;
     if (sys_numa_layout()->nodes_len > 1) {

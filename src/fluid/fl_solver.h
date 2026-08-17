@@ -7,9 +7,9 @@ typedef struct FL_Solver_Euler {
 
   FL_State            residual;
 
-  // NOTE(cmat): Time step buckets for reduction.
-  U64                 time_steps_len;
-  F64                *time_steps_dat;
+  // NOTE(cmat): Time-Step for each cell.
+  F64                *cell_time_step;
+  F64                *lane_time_step;
 
   // NOTE(cmat): Halo synchronization.
   IPC_Request_List    halo_request_list;
@@ -19,3 +19,8 @@ typedef struct FL_Solver_Euler {
   F32                *halo_send_dat;
 } FL_Solver_Euler;
 
+typedef U32 Time_Step_Mode;
+enum {
+  Time_Step_Global,
+  Time_Step_Local,
+};

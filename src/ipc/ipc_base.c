@@ -274,6 +274,19 @@ function F64 ipc_rank_minimum_f64(F64 value) {
   return result;
 }
 
+function F32 ipc_rank_minimum_f32(F32 value) {
+  profiler_begin_function();
+
+  F32 result = 0;
+  if (lane_index() == 0) {
+    MPI_Allreduce(&value, &result, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+  }
+
+  lane_broadcast_type(&result, 0);
+  profiler_end_function();
+  return result;
+}
+
 function void ipc_rank_gather_all_u64(U64 value, U64 *values_all) {
   profiler_begin_function();
 

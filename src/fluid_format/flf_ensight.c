@@ -182,20 +182,25 @@ function void flf_ensight_export_init(FLF_Ensight_Export *export, Str08 folder_p
   
           "TIME"                                                               "\n"
           "time set: 1"                                                        "\n"
-          "filename start number: 1"                                           "\n"
-          "filename increment: 1"                                              "\n"
-          "time values:"                                                       "\n"
           "number of steps: ");
 
         sys_file_write(&case_file, range1_u64(0, case_header.len), case_header.txt);
         export->step_count_file_range = range1_u64(case_header.len, case_header.len + 24);
 
-        Str08 steps = str08_format(scratch.arena, "%24u", 0);
+        Str08 steps = str08_format(scratch.arena, "%-24u", 0);
         if (steps.len == range1_u64_len(export->step_count_file_range)) {
           sys_file_write(&case_file, export->step_count_file_range, steps.txt);
         } else {
           log_fatal("Invalid step count string: %S. Got length %llu expected 24", steps, steps.len);
         }
+
+        Str08 case_header_end = str08_format(scratch.arena, 
+          "\n"
+          "filename start number: 1"                                           "\n"
+          "filename increment: 1"                                              "\n"
+          "time values:"                                                       "\n");
+
+        sys_file_write(&case_file, range1_u64(export->step_count_file_range.max, export->step_count_file_range.max + case_header_end.len), case_header_end.txt);
       }
     }
   }
@@ -311,7 +316,7 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, F32 time, FL_S
   if (lane_index() == 0 && ipc_rank_index() == 0) {
     SYS_File case_file = { };
     SYS_File_Scope(&case_file, export->case_file_path, SYS_File_Access_Flag_Write) {
-      Str08 steps = str08_format(scratch.arena, "%24u", (U32)export->timestep_count);
+      Str08 steps = str08_format(scratch.arena, "%-24u", (U32)export->timestep_count);
       if (steps.len == range1_u64_len(export->step_count_file_range)) {
         sys_file_write(&case_file, export->step_count_file_range, steps.txt);
       } else {
@@ -321,7 +326,7 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, F32 time, FL_S
 
     // NOTE(cmat): Next, we append the new timestep.
     SYS_File_Scope(&case_file, export->case_file_path, SYS_File_Access_Flag_Write | SYS_File_Access_Flag_Append) {
-      Str08 time_step = str08_format(scratch.arena, "\n%.8g", time);
+      Str08 time_step = str08_format(scratch.arena, "%.8g\n", time);
       sys_file_write(&case_file, range1_u64(0, time_step.len), time_step.txt);
     }
   }
