@@ -19,6 +19,54 @@ typedef struct FL_State {
   };
 } FL_State;
 
+typedef struct FL_Gradient {
+  union {
+    struct {
+      F32  *grad_x;
+      F32  *grad_y;
+      F32  *grad_z;
+    };
+
+    F32 *grad_dat[3];
+  };
+} FL_Gradient;
+
+typedef struct FL_Gradient_State {
+  U64         inner_len;
+  U64         halo_len;
+
+  union {
+    struct {
+      FL_Gradient rho;
+      FL_Gradient v1;
+      FL_Gradient v2;
+      FL_Gradient v3;
+      FL_Gradient pressure;
+    };
+
+    FL_Gradient states[5];
+  };
+
+} FL_Gradient_State;
+
+typedef struct FL_Limiter_State {
+  U64         inner_len;
+  U64         halo_len;
+
+  union {
+    struct {
+      F32 *rho;
+      F32 *v1;
+      F32 *v2;
+      F32 *v3;
+      F32 *pressure;
+    };
+
+    F32 *states[5];
+  };
+
+} FL_Limiter_State;
+
 function void fl_state_init                     (FL_State *fl, UG_Mesh *mesh, B32 store_ghost_halo, Arena *arena);
 function void fl_state_set                      (FL_State *fl, U64 at, V5F state);
 function V5F  fl_state_get                      (FL_State *fl, U64 at);

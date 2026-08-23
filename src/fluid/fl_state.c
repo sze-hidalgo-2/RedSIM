@@ -29,6 +29,59 @@ function void fl_state_init(FL_State *fl, UG_Mesh *mesh, B32 store_ghost_halo, A
   lane_barrier();
 }
 
+function void fl_gradient_state_init(FL_Gradient_State *grad, UG_Mesh *mesh, B32 store_halo, Arena *arena) {
+  Zero_Fill(grad);
+
+  U64 total_len = mesh->cells.len;
+  if (store_halo) {
+    total_len += mesh->halos.len;
+  }
+
+  grad->inner_len    = mesh->cells.len;
+  grad->halo_len     = store_halo ? mesh->halos.len   : 0;
+
+  F32 *total_dat = 0;
+  if (lane_index() == 0) {
+    total_dat = arena_push_count(arena, F32, 3 * 5 * total_len);
+  }
+
+  lane_broadcast_ptr(&total_dat, 0);
+
+  for Iter_Index(it, 5) {
+    grad->states[it].grad_x = total_dat; total_dat += total_len;
+    grad->states[it].grad_y = total_dat; total_dat += total_len;
+    grad->states[it].grad_z = total_dat; total_dat += total_len;
+  }
+
+  lane_barrier();
+}
+
+function void fl_limiter_state_init(FL_Limiter_State *limiter, UG_Mesh *mesh, B32 store_halo, Arena *arena) {
+  Zero_Fill(limiter);
+
+  U64 total_len = mesh->cells.len;
+  if (store_halo) {
+    total_len += mesh->halos.len;
+  }
+
+  limiter->inner_len    = mesh->cells.len;
+  limiter->halo_len     = store_halo ? mesh->halos.len   : 0;
+
+  F32 *total_dat = 0;
+  if (lane_index() == 0) {
+    total_dat = arena_push_count(arena, F32, 5 * total_len);
+  }
+
+  lane_broadcast_ptr(&total_dat, 0);
+
+  for Iter_Index(it, 5) {
+    limiter->states[it] = total_dat;
+    total_dat += total_len;
+  }
+
+  lane_barrier();
+}
+
 force_inline function V5F fl_state_get(FL_State *fl, U64 at) {
   V5F     state = v5f(fl->rho[at], fl->rho_v1[at], fl->rho_v2[at], fl->rho_v3[at], fl->energy[at]);
   return  state;
@@ -58,6 +111,13 @@ function void fl_state_set_pressure(FL_State *fl, F32 pressure, U64 at) {
   F32 kinetic_energy = v3f_len2(rho_v) / (2.f * rho);
 
   fl->energy[at]     = pressure / (fl->gamma - 1.f) + kinetic_energy;
+}
+
+function F32 fl_state_energy_from_pressure(FL_State *fl, F32 density, V3F momentum, F32 pressure) {
+  F32 kinetic_energy  = v3f_len2(momentum) / (2.f * density);
+  F32 energy          = pressure / (fl->gamma - 1.f) + kinetic_energy;
+
+  return energy;
 }
 
 function F32 fl_state_get_temperature(FL_State *fl, U64 at) {

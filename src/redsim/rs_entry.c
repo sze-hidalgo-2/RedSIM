@@ -79,7 +79,7 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Now, each rank has its own mesh.
 
   // NOTE(cmat): Compute gradients for each cell.
-  // ug_mesh_compute_cells_gradient(&mesh, &permanent_arena);
+  ug_mesh_compute_cells_gradient(&mesh, &permanent_arena);
 
   // NOTE(cmat): Reoder cells by groups: Interior or boundary. [ interior cells | boundary cells ]
   // - This allows us to compute interior cells while waiting for halo cells to be distributed,
@@ -112,7 +112,7 @@ function void redsim_group_entry(void *user_data) {
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
 
-#if 0
+#if 1
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
@@ -147,7 +147,7 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Initial condition.
   lane_barrier();
   log_info("Initializing flow to SOD condition");
-#if 0
+#if 1
   fl_setup_sod(&solver.flow_1, &mesh);
 #else
   fl_state_set_inner_from_farfield(&solver.flow_1, &farfield);
@@ -159,13 +159,13 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Export results.
   FLF_Ensight_Export export = { };
   flf_ensight_export_init(&export, str08_lit("sod"), &mesh, &permanent_arena);
-  flf_ensight_export_flow(&export, 0.0f, &solver.flow_1);
+  flf_ensight_export_flow(&export, 0.0f, &solver.flow_1, solver.cell_time_step);
 
   F32 time = 0;
-  for Iter_Index(it, 500) {
-    fl_solver_euler_solve(&solver, 0.1f);
-    time += 0.1f;
-    flf_ensight_export_flow(&export, time, &solver.flow_1);
+  for Iter_Index(it, 1) {
+    fl_solver_euler_solve(&solver, 0.f);
+    time += 1.f;
+    flf_ensight_export_flow(&export, time, &solver.flow_1, solver.cell_time_step);
   }
 
   log_zone_end();

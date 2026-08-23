@@ -177,6 +177,7 @@ function void flf_ensight_export_init(FLF_Ensight_Export *export, Str08 folder_p
           "scalar per element: 1 energy       data/cell_energy.bin******"      "\n"
           "scalar per element: 1 pressure     data/cell_pressure.bin******"    "\n"
           "scalar per element: 1 temperature  data/cell_temperature.bin******" "\n"
+          "scalar per element: 1 time_step    data/cell_time_step.bin******"   "\n"
           "scalar per element: 1 local_index  data/cell_local_index.bin******" "\n"
           "vector per element: 1 velocity     data/cell_velocity.bin******"    "\n"
   
@@ -267,7 +268,7 @@ function void flf_ensight_export_cell_variable(FLF_Ensight_Export *export, Str08
   profiler_end_function();
 }
 
-function void flf_ensight_export_flow(FLF_Ensight_Export *export, F32 time, FL_State *state) {
+function void flf_ensight_export_flow(FLF_Ensight_Export *export, F32 time, FL_State *state, F64 *cell_time_step) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(0);
   log_zone_start("Exporting ensight flow state");
@@ -298,6 +299,10 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, F32 time, FL_S
   // NOTE(cmat): Temperature
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = fl_state_get_temperature(state, it); }
   flf_ensight_export_cell_variable(export, str08_lit("temperature"), 1, variable_buffer);
+
+  // NOTE(cmat): Time Steps
+  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = (F32)(cell_time_step[it]); }
+  flf_ensight_export_cell_variable(export, str08_lit("time_step"), 1, variable_buffer);
 
   // NOTE(cmat): Local Index
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = (F32)(it); }

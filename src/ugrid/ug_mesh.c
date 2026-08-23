@@ -263,17 +263,17 @@ function void ug_mesh_compute_cells_faces(UG_Mesh *mesh, UG_Grid *grid, Arena *a
     U32 rhs_cell_index = 0;
 
     // NOTE(cmat): Compute face area and normal.
-    V3F x0    = v3f(grid->verts.x[verts.dat[0]], grid->verts.y[verts.dat[0]], grid->verts.z[verts.dat[0]]);
-    V3F x1    = v3f(grid->verts.x[verts.dat[1]], grid->verts.y[verts.dat[1]], grid->verts.z[verts.dat[1]]);
-    V3F x2    = v3f(grid->verts.x[verts.dat[2]], grid->verts.y[verts.dat[2]], grid->verts.z[verts.dat[2]]);
-    V3F fc    = v3f_mul(1.f/3.f, v3f_add(x0, v3f_add(x1, x2)));
-    V3F cc    = mesh->cells.center[lhs_cell_index];
-    V3F x01   = v3f_sub(x1, x0);
-    V3F x02   = v3f_sub(x2, x0);
-    V3F cross = v3f_cross(x01, x02);
-    F32 area  = .5f * v3f_len(cross);
-    V3F n     = v3f_noz(cross);
-    n         = v3f_dot(n, v3f_sub(fc, cc)) >= 0 ? n : v3f_mul(-1.f, n);
+    V3F x0     = v3f(grid->verts.x[verts.dat[0]], grid->verts.y[verts.dat[0]], grid->verts.z[verts.dat[0]]);
+    V3F x1     = v3f(grid->verts.x[verts.dat[1]], grid->verts.y[verts.dat[1]], grid->verts.z[verts.dat[1]]);
+    V3F x2     = v3f(grid->verts.x[verts.dat[2]], grid->verts.y[verts.dat[2]], grid->verts.z[verts.dat[2]]);
+    V3F fc     = v3f_mul(1.f/3.f, v3f_add(x0, v3f_add(x1, x2)));
+    V3F cc     = mesh->cells.center[lhs_cell_index];
+    V3F x01    = v3f_sub(x1, x0);
+    V3F x02    = v3f_sub(x2, x0);
+    V3F cross  = v3f_cross(x01, x02);
+    F32 area   = .5f * v3f_len(cross);
+    V3F n      = v3f_noz(cross);
+    n          = v3f_dot(n, v3f_sub(fc, cc)) >= 0 ? n : v3f_mul(-1.f, n);
 
     if (match) {
       rhs_cell_index = faces_all_dat[faces_it + 1].cell;
@@ -290,25 +290,31 @@ function void ug_mesh_compute_cells_faces(UG_Mesh *mesh, UG_Grid *grid, Arena *a
     UG_Cell_Faces_Verts *lhs_faces_verts    = faces_verts + lhs_cell_index;
     lhs_faces_verts->verts[lhs_face_index]  = verts;
 
-    UG_Cell_Faces       *lhs_faces        = mesh->cells.faces       + lhs_cell_index;
+    UG_Cell_Faces       *lhs_faces         = mesh->cells.faces       + lhs_cell_index;
     lhs_faces->adjacent [lhs_face_index]  = rhs_cell_index;
     lhs_faces->area     [lhs_face_index]  = area;
     lhs_faces->normal_x [lhs_face_index]  = n.x;
     lhs_faces->normal_y [lhs_face_index]  = n.y;
     lhs_faces->normal_z [lhs_face_index]  = n.z;
+    lhs_faces->center_x [lhs_face_index]  = fc.x;
+    lhs_faces->center_y [lhs_face_index]  = fc.y;
+    lhs_faces->center_z [lhs_face_index]  = fc.z;
 
     if (match) {
-      U32 rhs_face_index = faces_all_dat[faces_it + 1].face;
+      U32 rhs_face_index  = faces_all_dat[faces_it + 1].face;
 
       UG_Cell_Faces_Verts *rhs_faces_verts    = faces_verts + rhs_cell_index;
       rhs_faces_verts->verts[rhs_face_index]  = verts;
 
-      UG_Cell_Faces *rhs_faces             = mesh->cells.faces + rhs_cell_index;
+      UG_Cell_Faces *rhs_faces              = mesh->cells.faces + rhs_cell_index;
       rhs_faces->adjacent [rhs_face_index] = lhs_cell_index;
       rhs_faces->area     [rhs_face_index] = area;
       rhs_faces->normal_x [rhs_face_index] = -n.x;
       rhs_faces->normal_y [rhs_face_index] = -n.y;
       rhs_faces->normal_z [rhs_face_index] = -n.z;
+      rhs_faces->center_x [rhs_face_index] = fc.x;
+      rhs_faces->center_y [rhs_face_index] = fc.y;
+      rhs_faces->center_z [rhs_face_index] = fc.z;
     }
 
     // NOTE(cmat): Skip next face if there's a match
@@ -439,7 +445,6 @@ function void ug_mesh_compute_cells_gradient(UG_Mesh *mesh, Arena *arena) {
   }
 
   lane_broadcast_ptr(&mesh->cells.gradients, 0);
-#if 0
   for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
     UG_Cell_Faces     *faces = &mesh->cells.faces     [it_cell];
     UG_Cell_Gradient  *grad  = &mesh->cells.gradients [it_cell];
@@ -479,7 +484,7 @@ function void ug_mesh_compute_cells_gradient(UG_Mesh *mesh, Arena *arena) {
     grad->inv_A_yz  = (A_xz * A_xy - A_xx * A_yz) * determinant_rcp;
     grad->inv_A_zz  = (A_xx * A_yy - A_xy * A_xy) * determinant_rcp;
   }
-#endif
+
   lane_barrier();
   profiler_end_function();
 }
@@ -610,66 +615,19 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
   mesh->cells.len           = block->cells_len;
 
   if (lane_index() == 0) {
-    mesh->cells.center  = arena_push_count(arena, V3F,            mesh->cells.len);
     mesh->cells.volume  = arena_push_count(arena, F32,            mesh->cells.len);
     mesh->cells.faces   = arena_push_count(arena, UG_Cell_Faces,  mesh->cells.len);
   }
 
-  lane_broadcast_ptr(&mesh->cells.center, 0);
   lane_broadcast_ptr(&mesh->cells.volume, 0);
   lane_broadcast_ptr(&mesh->cells.faces,  0);
 
   // NOTE(cmat): Gather values based from partitioning.
   for Iter_Range(it, lane_range(mesh->cells.len)) {
-    mesh->cells.center[it]  = mesh_global->cells.center [block->cells_dat[it]];
     mesh->cells.volume[it]  = mesh_global->cells.volume [block->cells_dat[it]];
     mesh->cells.faces[it]   = mesh_global->cells.faces  [block->cells_dat[it]];
   }
-
-  // NOTE(cmat): Compute new mesh bounds.
-  lane_barrier();
-
-  Range3_F32 *bounds_global = 0;
-  if (lane_index() == 0) {
-    bounds_global = arena_push_count(scratch.arena, Range3_F32, lane_count());
-  }
-
-  lane_broadcast_ptr(&bounds_global, 0);
-
-  Range3_F32 *bounds_local = bounds_global + lane_index();
-  *bounds_local = range3_f32(v3f_f32(f32_limit_max), v3f_f32(f32_limit_min));
-  for Iter_Range(it, lane_range(mesh->cells.len)) {
-    // TODO(cmat): We don't have the grid anymore, so we're computing this for the centers.
-    // - This should still work with morton of course (arguably even better), but once we have the grid again,
-    // - we should switch to the real bounds once again for consistency and to avoid confusion.
-    bounds_local->min.x = f32_min(bounds_local->min.x, mesh->cells.center[it].x);
-    bounds_local->min.y = f32_min(bounds_local->min.y, mesh->cells.center[it].y);
-    bounds_local->min.z = f32_min(bounds_local->min.z, mesh->cells.center[it].z);
-
-    bounds_local->max.x = f32_max(bounds_local->max.x, mesh->cells.center[it].x);
-    bounds_local->max.y = f32_max(bounds_local->max.y, mesh->cells.center[it].y);
-    bounds_local->max.z = f32_max(bounds_local->max.z, mesh->cells.center[it].z);
-  }
-
-  // NOTE(cmat): Reduce bounds.
-  lane_barrier();
-  if (lane_index() == 0) {
-    Range3_F32 bounds = range3_f32(v3f_f32(f32_limit_max), v3f_f32(f32_limit_min));
-    for Iter_Index(it, lane_count()) {
-      for Iter_Index(elem, 3) {
-        bounds.min.dat[elem] = f32_min(bounds.min.dat[elem], bounds_global[it].min.dat[elem]);
-        bounds.max.dat[elem] = f32_max(bounds.max.dat[elem], bounds_global[it].max.dat[elem]);
-      }
-    }
-
-    // NOTE(cmat): Store the final bounds in the first slot.
-    bounds_global[0] = bounds;
-  }
-
-  // NOTE(cmat): Set bounds.
-  mesh->bounds = bounds_global[0];
-  log_info("Bounds: (%f, %f, %f), (%f, %f, %f)", V3_Expand(mesh->bounds.min), V3_Expand(mesh->bounds.max));
-
+ 
   // NOTE(cmat): Compute ghost cell count, halo cell count.
   lane_barrier();
 
@@ -928,8 +886,87 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
       halo_range->max = it + 1;
     }
   }
- 
+
+  // NOTE(cmat): Allocate centers, for both local and halo cells.
+  lane_barrier();
+  if (lane_index() == 0) {
+    mesh->cells.center = arena_push_count(arena, V3F, mesh->cells.len + mesh->halos.len + mesh->ghosts.len);
+  }
+
+  lane_broadcast_ptr(&mesh->cells.center, 0);
+
+  // NOTE(cmat): Assign local centers.
+  for Iter_Range(it, lane_range(mesh->cells.len)) {
+    mesh->cells.center[it] = mesh_global->cells.center[block->cells_dat[it]];
+  }
+
+  lane_barrier();
+
+  // NOTE(cmat): Assign halo centers.
+  for Iter_Range(it, lane_range(mesh->halos.len)) {
+    U32 cell_global = mesh->halos.cell_global[it];
+    mesh->cells.center[mesh->cells.len + it] = mesh_global->cells.center[cell_global];
+  }
+
+  lane_barrier();
+
+  // NOTE(cmat): Assign ghost centers. Reflect inner cell centers outwards.
+  for Iter_Range(it, lane_range(mesh->ghosts.len)) {
+    U32 parent_cell                                            = mesh->ghosts.parent_cell[it];
+    U32 parent_face                                            = mesh->ghosts.parent_face[it];
+    V3F parent_center                                          = mesh->cells.center[parent_cell];
+    V3F parent_normal                                          = v3f(mesh->cells.faces[parent_cell].normal_x[parent_face],  mesh->cells.faces[parent_cell].normal_y[parent_face],  mesh->cells.faces[parent_cell].normal_z[parent_face]);
+    V3F parent_face_center                                     = v3f(mesh->cells.faces[parent_cell].center_x[parent_face], mesh->cells.faces[parent_cell].center_y[parent_face], mesh->cells.faces[parent_cell].center_z[parent_face]);
+    V3F parent_center_diff                                     = v3f_sub(parent_face_center, parent_center);
+    mesh->cells.center[mesh->cells.len + mesh->halos.len + it] = v3f_add(parent_center, v3f_mul(2.f * v3f_dot(parent_center_diff, parent_normal), parent_normal));
+  }
+
+  // NOTE(cmat): Compute new mesh bounds.
+  lane_barrier();
+
+  Range3_F32 *bounds_global = 0;
+  if (lane_index() == 0) {
+    bounds_global = arena_push_count(scratch.arena, Range3_F32, lane_count());
+  }
+
+  lane_broadcast_ptr(&bounds_global, 0);
+
+  Range3_F32 *bounds_local = bounds_global + lane_index();
+  *bounds_local = range3_f32(v3f_f32(f32_limit_max), v3f_f32(f32_limit_min));
+  for Iter_Range(it, lane_range(mesh->cells.len)) {
+    // TODO(cmat): We don't have the grid anymore, so we're computing this for the centers.
+    // - This should still work with morton of course (arguably even better), but once we have the grid again,
+    // - we should switch to the real bounds once again for consistency and to avoid confusion.
+    bounds_local->min.x = f32_min(bounds_local->min.x, mesh->cells.center[it].x);
+    bounds_local->min.y = f32_min(bounds_local->min.y, mesh->cells.center[it].y);
+    bounds_local->min.z = f32_min(bounds_local->min.z, mesh->cells.center[it].z);
+
+    bounds_local->max.x = f32_max(bounds_local->max.x, mesh->cells.center[it].x);
+    bounds_local->max.y = f32_max(bounds_local->max.y, mesh->cells.center[it].y);
+    bounds_local->max.z = f32_max(bounds_local->max.z, mesh->cells.center[it].z);
+  }
+
+  // NOTE(cmat): Reduce bounds.
+  lane_barrier();
+  if (lane_index() == 0) {
+    Range3_F32 bounds = range3_f32(v3f_f32(f32_limit_max), v3f_f32(f32_limit_min));
+    for Iter_Index(it, lane_count()) {
+      for Iter_Index(elem, 3) {
+        bounds.min.dat[elem] = f32_min(bounds.min.dat[elem], bounds_global[it].min.dat[elem]);
+        bounds.max.dat[elem] = f32_max(bounds.max.dat[elem], bounds_global[it].max.dat[elem]);
+      }
+    }
+
+    // NOTE(cmat): Store the final bounds in the first slot.
+    bounds_global[0] = bounds;
+  }
+
+  // NOTE(cmat): Set bounds.
+  mesh->bounds = bounds_global[0];
+  log_info("Bounds: (%f, %f, %f), (%f, %f, %f)", V3_Expand(mesh->bounds.min), V3_Expand(mesh->bounds.max));
+
   // NOTE(cmat): Compute local grid data.
+  lane_barrier();
   ug_mesh_from_sub_mesh_grid(mesh, mesh_global, partition, block_index, arena);
 
   lane_barrier();
@@ -1048,7 +1085,8 @@ function void ug_mesh_ipc_distribute(UG_Mesh_Array *mesh_array) {
       ipc_rank_record_send(&request_list, mesh->grid.elems.len * sizeof(V4U), mesh->grid.elems.verts, rank, 0);
       
       // NOTE(cmat): UG_Cells
-      ipc_rank_record_send(&request_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
+      U64 center_count = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
+      ipc_rank_record_send(&request_list, center_count    * sizeof(V3F),              mesh->cells.center,         rank, 0);
       ipc_rank_record_send(&request_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
       ipc_rank_record_send(&request_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
       
@@ -1097,7 +1135,8 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
     mesh->grid.elems.verts    = arena_push_count(arena, V4U,            mesh->grid.elems.len);
 
     // NOTE(cmat): UG_Cells
-    mesh->cells.center        = arena_push_count(arena, V3F,            mesh->cells.len);
+    U64 center_count = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
+    mesh->cells.center        = arena_push_count(arena, V3F,            center_count);
     mesh->cells.volume        = arena_push_count(arena, F32,            mesh->cells.len);
     mesh->cells.faces         = arena_push_count(arena, UG_Cell_Faces,  mesh->cells.len);
 
@@ -1127,7 +1166,8 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
   ipc_rank_record_receive(&request_data_list, mesh->grid.elems.len * sizeof(V4U),         mesh->grid.elems.verts,     rank, 0);
 
   // NOTE(cmat): UG_Cells
-  ipc_rank_record_receive(&request_data_list, mesh->cells.len * sizeof(V3F),              mesh->cells.center,         rank, 0);
+  U64 center_count = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
+  ipc_rank_record_receive(&request_data_list, center_count    * sizeof(V3F),              mesh->cells.center,         rank, 0);
   ipc_rank_record_receive(&request_data_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
   ipc_rank_record_receive(&request_data_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
   
@@ -1227,6 +1267,9 @@ function void ug_mesh_optimize_reorder(UG_Mesh *mesh, Range1_U64 range) {
   // NOTE(cmat): Reorder volumes.
   array_reorder_key_u64(range_len,  sizeof(F32), sizeof(F32), (U08 *)(mesh->cells.volume + range.min), sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
 
+  // NOTE(cmat): Reorder gradients.
+  array_reorder_key_u64(range_len,  sizeof(UG_Cell_Gradient), sizeof(UG_Cell_Gradient), (U08 *)(mesh->cells.gradients + range.min), sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+
   // NOTE(cmat): Reorder cell faces.
   {
     U64  stride       = sizeof(UG_Cell_Faces);
@@ -1238,6 +1281,9 @@ function void ug_mesh_optimize_reorder(UG_Mesh *mesh, Range1_U64 range) {
     array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_x),  sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
     array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_y),  sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
     array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_z),  sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, center_x),  sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, center_y),  sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u64(range_len, stride, field_size, base + offsetof(UG_Cell_Faces, center_z),  sizeof(V2_U64), &morton_codes->y, Array_Reorder_Mode_New_To_Old);
   }
 
   // NOTE(cmat): Remap adjacent cells (only inner ones).
@@ -1386,6 +1432,9 @@ function void ug_mesh_reorder_by_groups(UG_Mesh *mesh) {
   // NOTE(cmat): Reorder volumes.
   array_reorder_key_u32(mesh->cells.len,  sizeof(F32), sizeof(F32), (U08 *)(mesh->cells.volume), sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
 
+  // NOTE(cmat): Reorder gradients.
+  array_reorder_key_u32(mesh->cells.len,  sizeof(UG_Cell_Gradient), sizeof(UG_Cell_Gradient), (U08 *)(mesh->cells.gradients), sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+
   // NOTE(cmat): Reorder cell faces.
   {
     U64  stride       = sizeof(UG_Cell_Faces);
@@ -1397,6 +1446,9 @@ function void ug_mesh_reorder_by_groups(UG_Mesh *mesh) {
     array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_x),  sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
     array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_y),  sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
     array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, normal_z),  sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, center_x),  sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, center_y),  sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
+    array_reorder_key_u32(mesh->cells.len, stride, field_size, base + offsetof(UG_Cell_Faces, center_z),  sizeof(U32), new_to_old, Array_Reorder_Mode_New_To_Old);
   }
 
   // NOTE(cmat): Remap adjacent cells (only inner ones).

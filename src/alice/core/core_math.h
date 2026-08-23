@@ -22,7 +22,7 @@ global const F64 f64_e           = 2.71828182845904523536;
 global const F64 f64_root_2      = 1.41421356237309504880;
 global const F64 f64_ln_2        = 0.693147180559945309417;
 
-global const F32 f32_noz_epsilon = 1.0e-6f;
+global const F32 f32_noz_epsilon = 1.0e-12f;
 
 // ------------------------------------------------------------
 // #-- Integer Packing
@@ -459,6 +459,8 @@ typedef union V5_F32 {
   struct { V3_F32 x123; V2_F32 x45;                     };
   struct { F32 _padding_1; V3_F32 x234; F32 _padding_2; };
   struct { V2_F32 x12;  V3_F32 x345;                    };
+
+  F32 dat[5];
 } V5_F32;
 
 Assert_Compiler(sizeof(V5_F32) == 5 * sizeof(F32));
@@ -506,6 +508,10 @@ force_inline function V2F     v2f       (F32 x, F32 y)                          
 force_inline function V3F     v3f       (F32 x, F32 y, F32 z)                       { return (V3F) { x, y, z };    }
 force_inline function V4F     v4f       (F32 x, F32 y, F32 z, F32 w)                { return (V4F) { x, y, z, w }; }
 force_inline function V5F     v5f       (F32 x1, F32 x2, F32 x3, F32 x4, F32 x5)    { return (V5F) { x1, x2, x3, x4, x5 }; }
+
+force_inline function V2_F64  v2_f64    (F64 x, F64 y)                              { return (V2_F64) { x, y };       }
+force_inline function V3_F64  v3_f64    (F64 x, F64 y, F64 z)                       { return (V3_F64) { x, y, z };    }
+force_inline function V4_F64  v4_f64    (F64 x, F64 y, F64 z, F64 w)                { return (V4_F64) { x, y, z, w }; }
 
 force_inline function V2I     v2i       (I32 x, I32 y)                  { return (V2I) { x, y };       }
 force_inline function V3I     v3i       (I32 x, I32 y, I32 z)           { return (V3I) { x, y, z };    }

@@ -1,19 +1,31 @@
+// NOTE(cmat): Mesh definition
 #mesh
-file        :: "cube_4M.su2"
+mesh        :: "cube_4M.su2"
 
+// NOTE(cmat): Solver definition
 #solver
-model       :: "navier-stokes"
-integrator  :: "ssprk-4-3"
+time        :: 0.2
+cfl         :: 0.85
+model       :: "euler"
+integrator  :: "ssprk43"
+scheme      :: "lsq"
 limiter     :: "barth-jespersen"
 
-#simulaion
-time        :: 0.2
+// NOTE(cmat): Problem definition
+#problem
+boundary 'x-min' :: slip
+boundary 'y-min' :: slip
+boundary 'z-min' :: slip
 
-#boundary
-"x-min"     ::  "slip"
-"y-min"     ::  "slip"
-"z-min"     ::  "slip"
-"x-max"     ::  "slip"
-"y-max"     ::  "slip"
-"z-max"     ::  "slip"
+boundary 'x-max' :: slip
+boundary 'y-max' :: slip
+boundary 'z-max' :: slip
 
+// NOTE(cmat): Source-Term user defined function
+initial_condition "sod" :: c_function (V3F position) {
+  return primitive_state(.rho       = (position.x < 0) ? 1.0 : 0.100,
+                         .v1        = 0,
+                         .v2        = 0,
+                         .v3        = 0,
+                         .pressure  = (position.x < 0) ? 1.0 : 0.125);
+}

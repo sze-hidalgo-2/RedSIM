@@ -62,6 +62,7 @@ fi
 if [[ -n ${asan-} ]]; then
   echo "address sanitizer: yes"
   compiler_flags+=" -fsanitize=address"
+  # compiler_flags+=" -fsanitize=thread"
   compiler_flags+=" -fsanitize-address-use-after-scope"
   compiler_flags+=" -fno-omit-frame-pointer"
 else

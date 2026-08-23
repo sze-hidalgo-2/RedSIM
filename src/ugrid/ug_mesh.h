@@ -16,6 +16,9 @@ typedef struct UG_Cell_Faces {
   F32 normal_x  [4]; // NOTE(cmat): Outward normal vector.
   F32 normal_y  [4];
   F32 normal_z  [4];
+  F32 center_x  [4]; // NOTE(cmat): Face center.
+  F32 center_y  [4];
+  F32 center_z  [4];
 } UG_Cell_Faces;
 
 // NOTE(cmat): Gradient computation with Least-Squares reconstruction.

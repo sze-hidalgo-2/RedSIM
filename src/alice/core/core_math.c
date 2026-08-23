@@ -38,7 +38,7 @@
     F64 result  = _mm_cvtsd_f64(v);
     return result;
   }
-
+ 
   function F64 f64_floor(F64 x) {
     __m128d v = _mm_set_sd(x);
     I64 i     = (I64)_mm_cvttsd_si64(v);
@@ -62,7 +62,7 @@
 #endif
 
 // ------------------------------------------------------------
-//  Triggonometry
+// #-- Triggonometry
 
 // NOTE(cmat): Based on minimax approximation, degree 7.
 // Coefficients: https://gist.github.com/publik-void/067f7f2fef32dbe5c27d6e215f824c91#sin-rel-error-minimized-degree-7
