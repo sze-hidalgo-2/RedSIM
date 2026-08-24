@@ -13,8 +13,11 @@ function void fl_state_init(FL_State *fl, UG_Mesh *mesh, B32 store_ghost_halo, A
 
   lane_broadcast_ptr(&total_dat, 0);
 
-  fl->gamma        = 1.4f;
-  fl->gas_constant = 287.05f; // J / (kg * K)
+  fl->gamma                = 1.4f;
+  fl->gas_constant         = 287.05f; // J / (kg * K)
+  fl->viscosity_mu         = 1.85e-5f;
+  fl->thermal_conductivity = 0.026f;
+  fl->prandtl_number       = 0.71f;
 
   fl->inner_len    = mesh->cells.len;
   fl->halo_len     = store_ghost_halo ? mesh->halos.len   : 0;

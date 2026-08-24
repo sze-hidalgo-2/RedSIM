@@ -96,3 +96,78 @@ force_inline function FL_Flux fl_flux_hllc(V5F UL, V5F UR, V3F n, F32 gamma) {
 
   return flux;
 }
+force_inline function V3F fl_flux_grad_correct(V3F grad_avg, F32 phi_L, F32 phi_R, V3F e_hat, F32 dist_rcp) {
+  F32 directional_avg   = v3f_dot(grad_avg, e_hat);
+  F32 directional_exact = (phi_R - phi_L) * dist_rcp;
+  V3F grad_corrected    = v3f_add(grad_avg, v3f_mul(directional_exact - directional_avg, e_hat));
+  return grad_corrected;
+}
+
+force_inline function FL_Flux fl_flux_viscous(V5F left_primitive, V3F left_grad[5], V3F left_center,
+                                              V5F right_primitive, V3F right_grad[5], V3F right_center,
+                                              V3F normal, F32 area, F32 volume, F32 mu, F32 k_thermal,
+                                              F32 gas_constant, F32 gamma, F32 prandtl) {
+
+  V3F center_delta = v3f_sub(right_center, left_center);
+  F32 dist         = v3f_len(center_delta);
+  F32 dist_rcp     = 1.f / dist;
+  V3F e_hat        = v3f_mul(dist_rcp, center_delta);
+
+  // NOTE(cmat): Compute velocity on face.
+  V3F left_velocity   = v3f(left_primitive.x2,  left_primitive.x3,  left_primitive.x4);
+  V3F right_velocity  = v3f(right_primitive.x2, right_primitive.x3, right_primitive.x4);
+  V3F face_velocity   = v3f_mul(.5f, v3f_add(left_velocity, right_velocity));
+
+  // NOTE(cmat): Compute velocity gradient tensor (Jacobian).
+  V3F du_avg = v3f_mul              (.5f, v3f_add(left_grad[1], right_grad[1]));
+  V3F dv_avg = v3f_mul              (.5f, v3f_add(left_grad[2], right_grad[2]));
+  V3F dw_avg = v3f_mul              (.5f, v3f_add(left_grad[3], right_grad[3]));
+  V3F du     = fl_flux_grad_correct (du_avg, left_velocity.x, right_velocity.x, e_hat, dist_rcp);
+  V3F dv     = fl_flux_grad_correct (dv_avg, left_velocity.y, right_velocity.y, e_hat, dist_rcp);
+  V3F dw     = fl_flux_grad_correct (dw_avg, left_velocity.z, right_velocity.z, e_hat, dist_rcp);
+
+  // NOTE(cmat): Trace of Jacobian.
+  F32 div_u = du.x + dv.y + dw.z;
+
+  // NOTE(cmat): Compute stress tensor. Symmetric Matrix.
+  F32 tau_xx = 2.f * mu * du.x - (2.f / 3.f) * mu * div_u;
+  F32 tau_yy = 2.f * mu * dv.y - (2.f / 3.f) * mu * div_u;
+  F32 tau_zz = 2.f * mu * dw.z - (2.f / 3.f) * mu * div_u;
+  F32 tau_xy = mu * (du.y + dv.x);
+  F32 tau_xz = mu * (du.z + dw.x);
+  F32 tau_yz = mu * (dv.z + dw.y);
+
+  V3F tau_normal = v3f( tau_xx * normal.x + tau_xy * normal.y + tau_xz * normal.z,
+                        tau_xy * normal.x + tau_yy * normal.y + tau_yz * normal.z,
+                        tau_xz * normal.x + tau_yz * normal.y + tau_zz * normal.z);
+
+  // NOTE(cmat): Reconstruct temperature gradient.
+  F32 left_rho       = left_primitive.x1;
+  F32 right_rho      = right_primitive.x1;
+  F32 left_pressure  = left_primitive.x5;
+  F32 right_pressure = right_primitive.x5;
+
+  V3F grad_T_l    = v3f_mul(1.f / (left_rho * left_rho * gas_constant), v3f_sub(v3f_mul(left_rho, left_grad[4]),  v3f_mul(left_pressure, left_grad[0])));
+  V3F grad_T_r    = v3f_mul(1.f / (right_rho * right_rho * gas_constant), v3f_sub(v3f_mul(right_rho, right_grad[4]), v3f_mul(right_pressure, right_grad[0])));
+  
+  F32 T_L         = left_pressure  / (left_rho  * gas_constant);
+  F32 T_R         = right_pressure / (right_rho * gas_constant);
+  V3F grad_T_avg  = v3f_mul(.5f, v3f_add(grad_T_l, grad_T_r));
+  V3F grad_T_face = fl_flux_grad_correct (grad_T_avg, T_L, T_R, e_hat, dist_rcp);
+
+  // NOTE(cmat): Compute viscous state.
+  F32 heat_term     = k_thermal * v3f_dot(grad_T_face, normal);
+  F32 work_term     = v3f_dot(tau_normal, face_velocity);
+  V5F viscous_state = v5f(0.f, tau_normal.x, tau_normal.y, tau_normal.z, work_term + heat_term);
+
+  // NOTE(cmat): Diffusive viscous stability limit, Blazek.
+  F32 rho_face          = .5f * (left_rho + right_rho);
+  F32 visc_coeff        = f32_max(4.f / 3.f, gamma / prandtl);
+  F32 lambda_visc_face  = (mu / rho_face) * visc_coeff * (area * area) / volume;
+
+  FL_Flux flux        = { };
+  flux.state          = viscous_state;
+  flux.lambda_viscous = lambda_visc_face;
+
+  return flux;
+}

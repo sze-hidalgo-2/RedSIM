@@ -1,6 +1,9 @@
 typedef struct FL_State {
   F32   gamma;
   F32   gas_constant;
+  F32   viscosity_mu;
+  F32   thermal_conductivity;
+  F32   prandtl_number;
 
   U64   inner_len;
   U64   halo_len;

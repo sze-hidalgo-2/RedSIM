@@ -185,22 +185,21 @@ function void flf_ensight_export_init(FLF_Ensight_Export *export, Str08 folder_p
       SYS_File case_file = { };
       SYS_File_Scope(&case_file, export->case_file_path, SYS_File_Access_Flag_Create | SYS_File_Access_Flag_Truncate | SYS_File_Access_Flag_Write) {
         Str08 case_header = str08_format(scratch.arena,
-          "FORMAT"                                                             "\n"
-          "type: ensight gold"                                                 "\n"
-
-          "GEOMETRY"                                                           "\n"
-          "model: data/ugrid.geo"                                              "\n"
-          "VARIABLE"                                                           "\n"
-          "scalar per element: 1 density      data/cell_density.bin******"     "\n"
-          "scalar per element: 1 energy       data/cell_energy.bin******"      "\n"
-          "scalar per element: 1 pressure     data/cell_pressure.bin******"    "\n"
-          "scalar per element: 1 temperature  data/cell_temperature.bin******" "\n"
-          "scalar per element: 1 time_step    data/cell_time_step.bin******"   "\n"
-          "scalar per element: 1 local_index  data/cell_local_index.bin******" "\n"
-          "vector per element: 1 velocity     data/cell_velocity.bin******"    "\n"
-  
-          "TIME"                                                               "\n"
-          "time set: 1"                                                        "\n"
+          "FORMAT"                                                                                              "\n"
+          "type: ensight gold"                                                                                  "\n"
+          "GEOMETRY"                                                                                            "\n"
+          "model: data/ugrid.geo"                                                                               "\n"
+          "VARIABLE"                                                                                            "\n"
+          "scalar per element: 1 density                data/cell_density.bin******"                            "\n"
+          "scalar per element: 1 energy                 data/cell_energy.bin******"                             "\n"
+          "scalar per element: 1 pressure               data/cell_pressure.bin******"                           "\n"
+          "scalar per element: 1 temperature            data/cell_temperature.bin******"                        "\n"
+          "scalar per element: 1 potential_temperature  data/cell_potential_temperature.bin******"              "\n"
+          "scalar per element: 1 time_step              data/cell_time_step.bin******"                          "\n"
+          "scalar per element: 1 local_index            data/cell_local_index.bin******"                        "\n"
+          "vector per element: 1 velocity               data/cell_velocity.bin******"                           "\n"
+          "TIME"                                                                                                "\n"
+          "time set: 1"                                                                                         "\n"
           "number of steps: ");
 
         sys_file_write(&case_file, range1_u64(0, case_header.len), case_header.txt);
@@ -317,6 +316,13 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, F32 time, FL_S
   // NOTE(cmat): Temperature
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = fl_state_get_temperature(state, it); }
   flf_ensight_export_cell_variable(export, str08_lit("temperature"), 1, variable_buffer);
+
+  // NOTE(cmat): Potential Temperature (Poisson's Equation for potential temperature).
+  for Iter_Range(it, lane_range(cell_count)) {
+    variable_buffer[it] = fl_state_get_temperature(state, it) * powf(1.0e12f / fl_state_get_pressure(state, it), (state->gamma - 1.f) / state->gamma);
+  }
+
+  flf_ensight_export_cell_variable(export, str08_lit("potential_temperature"), 1, variable_buffer);
 
   // NOTE(cmat): Time Steps
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = (F32)(cell_time_step[it]); }

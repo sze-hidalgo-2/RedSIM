@@ -216,7 +216,8 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
       left_grad[it_state] = v3f(grad->states[it_state].grad_x[it_cell], grad->states[it_state].grad_y[it_cell], grad->states[it_state].grad_z[it_cell]);
     }
 
-    F64 spectral_sum = 0.f;
+    F64 spectral_inviscid_sum = 0.f;
+    F64 spectral_viscous_sum  = 0.f;
     for Iter_Index(it_face, 4) {
       U32 adjacent     = faces->adjacent[it_face];
       V3F normal       = v3f(faces->normal_x[it_face], faces->normal_y[it_face], faces->normal_z[it_face]);
@@ -235,19 +236,21 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
       V3F left_momentum = v3f_mul(left_face_primitive[0], v3f(left_face_primitive[1], left_face_primitive[2], left_face_primitive[3]));
       V5F left_state    = v5f(left_face_primitive[0], left_momentum.x, left_momentum.y, left_momentum.z, fl_state_energy_from_pressure(state, left_face_primitive[0], left_momentum, left_face_primitive[4]));
 
+      V5F right_primitive = {
+        .x1 = state->rho[adjacent],
+        .x2 = state->rho_v1[adjacent] / state->rho[adjacent],
+        .x3 = state->rho_v2[adjacent] / state->rho[adjacent],
+        .x4 = state->rho_v3[adjacent] / state->rho[adjacent],
+        .x5 = fl_state_get_pressure(state, adjacent),
+      };
+
       // NOTE(cmat): Construct right state.
       // NOTE(cmat): If the right cell is not a ghost state, it has a gradient.
       V5F right_state   = { };
-      if (adjacent < (mesh->cells.len + mesh->halos.len)) {
-        V5F right_primitive = {
-          .x1 = state->rho[adjacent],
-          .x2 = state->rho_v1[adjacent] / state->rho[adjacent],
-          .x3 = state->rho_v2[adjacent] / state->rho[adjacent],
-          .x4 = state->rho_v3[adjacent] / state->rho[adjacent],
-          .x5 = fl_state_get_pressure(state, adjacent),
-        };
+      V3F right_grad[5] = { };
+      Stack_Array_Zero(right_grad);
 
-        V3F right_grad[5] = { };
+      if (adjacent < (mesh->cells.len + mesh->halos.len)) {
         for Iter_Index(it_state, 5) {
           right_grad[it_state] = v3f(grad->states[it_state].grad_x[adjacent], grad->states[it_state].grad_y[adjacent], grad->states[it_state].grad_z[adjacent]);
         }
@@ -269,9 +272,12 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
         right_state = fl_state_get(state, adjacent);
       }
 
-      FL_Flux flux    = fl_flux_hllc(left_state, right_state, normal, state->gamma);
-      cell_residual   = v5f_sub(cell_residual, v5f_mul(area, flux.state));
-      spectral_sum   += (F64)area * (F64)flux.lambda_max;
+      FL_Flux flux_inviscid   = fl_flux_hllc    (left_state, right_state, normal, state->gamma);
+      FL_Flux flux_viscous    = fl_flux_viscous (left_primitive, left_grad, mesh->cells.center[it_cell], right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, mesh->cells.volume[it_cell], state->viscosity_mu, state->thermal_conductivity, state->gas_constant, state->gamma, state->prandtl_number);
+      V5F     flux_total      = v5f_sub(flux_inviscid.state, flux_viscous.state);
+      cell_residual           = v5f_sub(cell_residual, v5f_mul(area, flux_total));
+      spectral_inviscid_sum  += (F64)area * (F64)flux_inviscid.lambda_max;
+      spectral_viscous_sum   +=(F64)flux_viscous.lambda_viscous;
     }
 
     F32 volume     = mesh->cells.volume[it_cell];
@@ -284,7 +290,7 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
     residual->energy  [it_cell] = cell_residual.x5 * volume_rcp;
 
     if (compute_time_step) {
-      cell_time_step[it_cell] = (F64)volume / spectral_sum;
+      cell_time_step[it_cell] = (F64)volume / (spectral_inviscid_sum + spectral_viscous_sum);
     }
   }
 
@@ -626,7 +632,7 @@ function void fl_solver_euler_compute_residual(FL_Solver_Euler *euler, FL_State 
     // NOTE(cmat): Next, we compute gradients and limiters for each local cell.
     // - Those are cells not touching any halo cells; they can still be in touch with ghost cells.
     fl_solver_compute_gradient_range                (euler, state, &euler->gradient, mesh->groups.cells_interior);
-    fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 1.f, mesh->groups.cells_interior);
+    fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 3.f, mesh->groups.cells_interior);
   }
 
   // NOTE(cmat): Unpack received halo state data.
@@ -634,7 +640,7 @@ function void fl_solver_euler_compute_residual(FL_Solver_Euler *euler, FL_State 
 
   // NOTE(cmat): Compute gradients and limiters for remaining boundary cells
   fl_solver_compute_gradient_range                (euler, state, &euler->gradient, mesh->groups.cells_boundary);
-  fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 1.f, mesh->groups.cells_boundary);
+  fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 3.f, mesh->groups.cells_boundary);
 
   // NOTE(cmat): Pack cells for gradient exchange.
   fl_solver_euler_halo_gradient_pack_send_data(euler, &euler->gradient);
@@ -663,9 +669,11 @@ function F64 fl_solver_euler_solve_global_step_forward_euler(FL_Solver_Euler *eu
   // NOTE(cmat): Compute residual.
   fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 1);
 
-  // NOTE(cmat): global time-stepping
+  // NOTE(cmat): Global time-stepping.
   F64 time_step = fl_solver_compute_global_time_step(euler, euler->cell_time_step);
-  fl_solver_global_euler_step(euler, &euler->flow_1, &euler->flow_1, &euler->residual, CFL, time_step);
+  time_step *= CFL;
+
+  fl_solver_global_euler_step(euler, &euler->flow_1, &euler->flow_1, &euler->residual, 1.f, time_step);
   
   profiler_end_function();
   return time_step;
@@ -702,28 +710,29 @@ function F64 fl_solver_euler_solve_global_step_SSP_RK_4_3(FL_Solver_Euler *euler
 
   // NOTE(cmat): Compute time-step, based on R(Q1)
   F64 time_step = fl_solver_compute_global_time_step(euler, euler->cell_time_step);
+  time_step *= CFL;
 
   // NOTE(cmat): Compute Q2 = Q1 + dt/2 * R(Q1)
-  fl_solver_global_euler_step(euler, &euler->flow_2, &euler->flow_1, &euler->residual, CFL, (.5f * time_step));
+  fl_solver_global_euler_step(euler, &euler->flow_2, &euler->flow_1, &euler->residual, .5f, time_step);
 
   // NOTE(cmat): Compute R(Q2)
   fl_solver_euler_compute_residual(euler, &euler->flow_2, &euler->residual, 0);
 
   // NOTE(cmat): Compute Q2 = Q2 + dt / 2 * R(Q2)
-  fl_solver_global_euler_step(euler, &euler->flow_2, &euler->flow_2, &euler->residual, CFL, (.5f * time_step));
+  fl_solver_global_euler_step(euler, &euler->flow_2, &euler->flow_2, &euler->residual, .5f, time_step);
 
   // NOTE(cmat): Compute R(Q2)
   fl_solver_euler_compute_residual(euler, &euler->flow_2, &euler->residual, 0);
 
   // NOTE(cmat): Compute  Q2 = 2/3 * Q1 + 1/3 * [ Q2 + dt/2 * R(Q2) ]
   //                      Q2 = 2/3 * Q1 + 1/3 * Q2 + dt/2 * R(Q2)
-  fl_solver_global_euler_step_2(euler, &euler->flow_2, 2.f/3.f, &euler->flow_1, 1.f/3.f, &euler->flow_2, &euler->residual, CFL, ((1.f / 6.f) * time_step));
+  fl_solver_global_euler_step_2(euler, &euler->flow_2, 2.f/3.f, &euler->flow_1, 1.f/3.f, &euler->flow_2, &euler->residual, 1.f / 6.f, time_step);
 
   // NOTE(cmat): Compute R(Q2)
   fl_solver_euler_compute_residual(euler, &euler->flow_2, &euler->residual, 0);
 
   // U = Q2 + dt/2 * R(Q2)
-  fl_solver_global_euler_step(euler, &euler->flow_1, &euler->flow_2, &euler->residual, CFL, (.5f * time_step));
+  fl_solver_global_euler_step(euler, &euler->flow_1, &euler->flow_2, &euler->residual, .5f, time_step);
   
   profiler_end_function();
   return time_step;
