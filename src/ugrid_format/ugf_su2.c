@@ -170,6 +170,7 @@ function void ugf_grid_init_from_su2(UG_Grid *ugrid, Arena *arena, Str08 file_pa
   }
 
   // NOTE(cmat): Broadcast result.
+  ugrid->scale = 1.f;
   lane_broadcast_type(ugrid, 0);
 
   log_info("Finished loading su2 file!");

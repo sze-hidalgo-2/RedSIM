@@ -92,19 +92,19 @@ function void redsim_group_entry(void *user_data) {
 
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
-
-  /*
+#if 0
   FL_Boundary_Farfield farfield = {
-    .density  = 0.1249f,
-    .velocity = v3f(285.49f, -15.27f, 0.f),
-    .pressure = 10000.f,
-  };
-  */
-  FL_Boundary_Farfield farfield = {
-    .density  = 1.2f,
+    .density  = 1.225f,
     .velocity = v3f(3.f, 4.f, 0.f),
-    .pressure = 10000.f,
+    .pressure = 101325.f,
   };
+#else
+  FL_Boundary_Farfield farfield = {
+    .density  = 1.f,
+    .velocity = v3f(0.008728f, 0.011637f, 0.f),
+    .pressure = 0.7143f,
+  };
+#endif
   
   // NOTE(cmat): Init boundary map.
 
@@ -112,7 +112,7 @@ function void redsim_group_entry(void *user_data) {
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
 
-#if 1
+#if 0
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
@@ -122,8 +122,8 @@ function void redsim_group_entry(void *user_data) {
 #else
 
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
-    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
+    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
 
     /*
     // NOTE(cmat): WING
@@ -147,7 +147,7 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Initial condition.
   lane_barrier();
   log_info("Initializing flow to SOD condition");
-#if 1
+#if 0
   fl_setup_sod(&solver.flow_1, &mesh);
 #else
   fl_state_set_inner_from_farfield(&solver.flow_1, &farfield);
@@ -162,7 +162,7 @@ function void redsim_group_entry(void *user_data) {
   flf_ensight_export_flow(&export, 0.0f, &solver.flow_1, solver.cell_time_step);
 
   F32 time = 0;
-  for Iter_Index(it, 1) {
+  for Iter_Index(it, 100) {
     fl_solver_euler_solve(&solver, 0.f);
     time += 1.f;
     flf_ensight_export_flow(&export, time, &solver.flow_1, solver.cell_time_step);

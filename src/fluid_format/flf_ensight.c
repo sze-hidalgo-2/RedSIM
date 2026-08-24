@@ -64,6 +64,8 @@ force_inline function void flf_ensight_export_geo(Str08 geo_file_path, UG_Mesh *
 
   lane_broadcast_ptr(&part_buffer_dat, 0);
 
+  U64 vertex_data_from = 0;
+
   if (lane_index() == 0) {
     U64 part_buffer_off = 0;
 
@@ -76,7 +78,9 @@ force_inline function void flf_ensight_export_geo(Str08 geo_file_path, UG_Mesh *
 
     // NOTE(cmat): 2. Vertex data
     log_info("Writing part vertex data: %'llu elements", mesh->grid.verts.len);
-    flf_ensight_write_i32       (part_buffer_dat, &part_buffer_off, (I32)mesh->grid.verts.len);
+    flf_ensight_write_i32(part_buffer_dat, &part_buffer_off, (I32)mesh->grid.verts.len);
+
+    vertex_data_from = part_buffer_off;
     flf_ensight_write_f32_array (part_buffer_dat, &part_buffer_off, mesh->grid.verts.len, mesh->grid.verts.x);
     flf_ensight_write_f32_array (part_buffer_dat, &part_buffer_off, mesh->grid.verts.len, mesh->grid.verts.y);
     flf_ensight_write_f32_array (part_buffer_dat, &part_buffer_off, mesh->grid.verts.len, mesh->grid.verts.z);
@@ -98,6 +102,20 @@ force_inline function void flf_ensight_export_geo(Str08 geo_file_path, UG_Mesh *
 
     Assert(part_buffer_off == part_buffer_len, "Mismatch between last offset and buffer len");
   }
+
+  // NOTE(cmat): Re-Normalize vertex values.
+  lane_broadcast_u64(&vertex_data_from, 0);
+
+  F32 *vertex_data = (F32 *)(part_buffer_dat + vertex_data_from);
+  for Iter_Index(it_comp, 3) {
+    for Iter_Range(it_cell, lane_range(mesh->grid.verts.len)) {
+      F32 *p = &vertex_data[it_comp * mesh->grid.verts.len + it_cell];
+      *p    *= mesh->grid.scale;
+      *p    += mesh->grid.offset.dat[it_comp];
+    }
+  }
+
+  lane_barrier();
 
   // NOTE(cmat): Rank write sizes.
   log_info("Exchanging part sizes");

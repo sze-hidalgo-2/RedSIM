@@ -1,4 +1,5 @@
 struct UG_Cell_Faces_Verts;
+function void ug_mesh_normalize_grid_scale            (UG_Mesh *mesh, UG_Grid *grid);
 function void ug_mesh_compute_cells                   (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
 function void ug_mesh_compute_cells_faces             (UG_Mesh *mesh, UG_Grid *grid, Arena *arena);
 function void ug_mesh_compute_cells_faces_ghosts      (UG_Mesh *mesh, UG_Grid *grid, struct UG_Cell_Faces_Verts *faces_verts);
@@ -9,10 +10,93 @@ function void ug_mesh_compute_cells_faces_ghosts      (UG_Mesh *mesh, UG_Grid *g
 function void ug_mesh_init_from_grid(UG_Mesh *mesh, Arena *arena) {
   profiler_begin_function();
   Log_Zone_Scope("Computing mesh from grid") {
-    ug_mesh_compute_cells       (mesh, &mesh->grid, arena);  // NOTE(cmat): Compute cell geometric data.
-    ug_mesh_compute_cells_faces (mesh, &mesh->grid, arena);  // NOTE(cmat): Compute cell adjacency.
+    ug_mesh_normalize_grid_scale  (mesh, &mesh->grid);
+    ug_mesh_compute_cells         (mesh, &mesh->grid, arena);  // NOTE(cmat): Compute cell geometric data.
+    ug_mesh_compute_cells_faces   (mesh, &mesh->grid, arena);  // NOTE(cmat): Compute cell adjacency.
   }
 
+  profiler_end_function();
+}
+
+
+// ------------------------------------------------------------
+// #-- Normalize Grid Scale
+
+function void ug_mesh_normalize_grid_scale(UG_Mesh *mesh, UG_Grid *grid) {
+  profiler_begin_function();
+  Arena_Temp scratch = scratch_start(0);
+  log_zone_start("Normalizing grid scale");
+
+  Range3_F32 *bounds_global = 0;
+  if (lane_index() == 0) {
+    bounds_global = arena_push_count(scratch.arena, Range3_F32, lane_count());
+  }
+
+  lane_broadcast_ptr(&bounds_global, 0);
+
+  Range3_F32 *bounds_local = bounds_global + lane_index();
+  *bounds_local = range3_f32(v3f_f32(f32_limit_max), v3f_f32(f32_limit_min));
+
+  log_info("Computing grid bounds");
+  for Iter_Range(it, lane_range(mesh->grid.elems.len)) {
+    // NOTE(cmat): Gather vectors.
+    V4U v    = grid->elems.verts[it];
+    V3F a    = v3f(grid->verts.x[v.x], grid->verts.y[v.x], grid->verts.z[v.x]);
+    V3F b    = v3f(grid->verts.x[v.y], grid->verts.y[v.y], grid->verts.z[v.y]);
+    V3F c    = v3f(grid->verts.x[v.z], grid->verts.y[v.z], grid->verts.z[v.z]);
+    V3F d    = v3f(grid->verts.x[v.w], grid->verts.y[v.w], grid->verts.z[v.w]);
+
+    // NOTE(cmat): Compute bounds
+    for Iter_Index(elem, 3) {
+      bounds_local->min.dat[elem] = f32_min(bounds_local->min.dat[elem], a.dat[elem]);
+      bounds_local->min.dat[elem] = f32_min(bounds_local->min.dat[elem], b.dat[elem]);
+      bounds_local->min.dat[elem] = f32_min(bounds_local->min.dat[elem], c.dat[elem]);
+      bounds_local->min.dat[elem] = f32_min(bounds_local->min.dat[elem], d.dat[elem]);
+
+      bounds_local->max.dat[elem] = f32_max(bounds_local->max.dat[elem], a.dat[elem]);
+      bounds_local->max.dat[elem] = f32_max(bounds_local->max.dat[elem], b.dat[elem]);
+      bounds_local->max.dat[elem] = f32_max(bounds_local->max.dat[elem], c.dat[elem]);
+      bounds_local->max.dat[elem] = f32_max(bounds_local->max.dat[elem], d.dat[elem]);
+    }
+  }
+
+  lane_barrier();
+
+  log_info("Synchronizing thread bounds");
+  if (lane_index() == 0) {
+    Range3_F32 bounds = range3_f32(v3f_f32(f32_limit_max), v3f_f32(f32_limit_min));
+    for Iter_Index(it, lane_count()) {
+      for Iter_Index(elem, 3) {
+        bounds.min.dat[elem] = f32_min(bounds.min.dat[elem], bounds_global[it].min.dat[elem]);
+        bounds.max.dat[elem] = f32_max(bounds.max.dat[elem], bounds_global[it].max.dat[elem]);
+      }
+    }
+
+    // NOTE(cmat): Store the final bounds in the first slot.
+    bounds_global[0] = bounds;
+  }
+
+  lane_barrier();
+
+  // NOTE(cmat): Broadcast bounds.
+  mesh->bounds = bounds_global[0];
+  log_info("Grid bounds: (%.2g, %.2g, %.2g), (%.2g, %.2g, %.2g)", V3_Expand(mesh->bounds.min), V3_Expand(mesh->bounds.max));
+
+  grid->scale = v3f_largest(v3f_sub(mesh->bounds.max, mesh->bounds.min));
+  grid->offset = mesh->bounds.min;
+  log_info("Grid scale: %.2g", grid->scale);
+
+  F32 scale_rcp = f32_div_safe(1.f, grid->scale);
+  log_info("Normalizing grid vertices");
+  for Iter_Range(it, lane_range(mesh->grid.verts.len)) {
+    mesh->grid.verts.x[it] = (mesh->grid.verts.x[it] - grid->offset.x) * scale_rcp;
+    mesh->grid.verts.y[it] = (mesh->grid.verts.y[it] - grid->offset.y) * scale_rcp;
+    mesh->grid.verts.z[it] = (mesh->grid.verts.z[it] - grid->offset.z) * scale_rcp;
+  }
+
+  lane_barrier();
+  log_zone_end();
+  scratch_end(&scratch);
   profiler_end_function();
 }
 
@@ -35,7 +119,7 @@ function void ug_mesh_compute_cells(UG_Mesh *mesh, UG_Grid *grid, Arena *arena) 
 
   lane_broadcast_ptr(&mesh->cells.center,  0);
   lane_broadcast_ptr(&mesh->cells.volume,  0);
-  lane_broadcast_ptr(&bounds_global,        0);
+  lane_broadcast_ptr(&bounds_global,       0);
   
   Range3_F32 *bounds_local = bounds_global + lane_index();
   *bounds_local = range3_f32(v3f_f32(f32_limit_max), v3f_f32(f32_limit_min));
@@ -591,6 +675,9 @@ function void ug_mesh_from_sub_mesh_grid(UG_Mesh *mesh, UG_Mesh *mesh_global, UG
     // NOTE(cmat): Convert from global to local element coordinates.
     mesh->grid.elems.verts[cell_local].dat[vert_local] = new_local_vert_index;
   }
+
+  mesh->grid.scale  = mesh_global->grid.scale;
+  mesh->grid.offset = mesh_global->grid.offset;
 
   lane_barrier();
   scratch_end(&scratch);

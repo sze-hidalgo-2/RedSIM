@@ -68,7 +68,7 @@ typedef struct UG_Groups {
 } UG_Groups;
 
 typedef struct UG_Mesh {
-  Range3_F32    bounds;
+  Range3_F32    bounds; // TODO(cmat): Rename to center_bounds, move to UG_Cells.
   UG_Grid       grid;
   UG_Cells      cells;
   UG_Halos      halos;

@@ -22,6 +22,8 @@ typedef struct UG_Grid_Elems {
 } UG_Grid_Elems;
 
 typedef struct UG_Grid {
+  F32               scale;
+  V3F               offset;
   UG_Grid_Verts     verts;
   UG_Grid_Elems     elems;
   UG_Grid_Markers   markers;

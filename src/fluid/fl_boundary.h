@@ -1,6 +1,7 @@
 typedef U32 FL_Boundary_Type;
 enum {
   FL_Boundary_Type_Slip,
+  FL_Boundary_Type_No_Slip,
   FL_Boundary_Type_Farfield,
 };
 
