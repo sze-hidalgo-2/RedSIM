@@ -643,7 +643,7 @@ function void fl_solver_euler_compute_residual(FL_Solver_Euler *euler, FL_State 
     // NOTE(cmat): Next, we compute gradients and limiters for each local cell.
     // - Those are cells not touching any halo cells; they can still be in touch with ghost cells.
     fl_solver_compute_gradient_range                (euler, state, &euler->gradient, mesh->groups.cells_interior);
-    fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 3.f, mesh->groups.cells_interior);
+    fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 2.f, mesh->groups.cells_interior);
   }
 
   // NOTE(cmat): Unpack received halo state data.
@@ -651,7 +651,7 @@ function void fl_solver_euler_compute_residual(FL_Solver_Euler *euler, FL_State 
 
   // NOTE(cmat): Compute gradients and limiters for remaining boundary cells
   fl_solver_compute_gradient_range                (euler, state, &euler->gradient, mesh->groups.cells_boundary);
-  fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 3.f, mesh->groups.cells_boundary);
+  fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 2.f, mesh->groups.cells_boundary);
 
   // NOTE(cmat): Pack cells for gradient exchange.
   fl_solver_euler_halo_gradient_limiter_pack_send_data(euler, &euler->gradient, &euler->limiter);
@@ -790,7 +790,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
   // NOTE(cmat): Synchronize all ranks, for more accurate benchmarking.
   ipc_rank_barrier();
 
-  F32 CFL = 0.85f;
+  F32 CFL = 0.5f;
   U64 clock_start = sys_performance_clock_now();
 
   // NOTE(cmat): Iterate.
