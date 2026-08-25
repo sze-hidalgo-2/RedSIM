@@ -790,7 +790,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
   // NOTE(cmat): Synchronize all ranks, for more accurate benchmarking.
   ipc_rank_barrier();
 
-  F32 CFL = 0.5f;
+  F32 CFL = 0.85f;
   U64 clock_start = sys_performance_clock_now();
 
   // NOTE(cmat): Iterate.
