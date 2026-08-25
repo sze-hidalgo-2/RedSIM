@@ -13,11 +13,30 @@ function void fl_state_init(FL_State *fl, UG_Mesh *mesh, B32 store_ghost_halo, A
 
   lane_broadcast_ptr(&total_dat, 0);
 
+#if 0
   fl->gamma                = 1.4f;
   fl->gas_constant         = 287.05f; // J / (kg * K)
   fl->viscosity_mu         = 1.85e-5f;
   fl->thermal_conductivity = 0.026f;
   fl->prandtl_number       = 0.71f;
+#else
+  // fl->gamma                = 1.4f;
+  // fl->gas_constant         = 0.7143f;   // was 287.05 — R* = 1/gamma
+  // fl->viscosity_mu         = 4.46e-8f;  // was 1.85e-5
+  // fl->thermal_conductivity = 1.57e-7f;  // was 0.026
+  // fl->prandtl_number       = 0.71f;     // unchanged
+
+  fl->gamma                = 1.4f;
+  fl->gas_constant         = 0.7143f;    // R* = 1/gamma, unchanged
+  fl->viscosity_mu         = 1.716e-11f; // was 4.46e-8 — now includes /L_ref
+  fl->thermal_conductivity = 6.04e-11f;  // was 1.57e-7
+  fl->prandtl_number       = 0.71f;      // unchanged
+  fl->smagorinsky_cs       = 0.17f;      // unchanged — still dimensionless
+  fl->prandtl_turbulent    = 0.9f;       // unchanged — still dimensionless
+
+
+
+#endif
 
   fl->inner_len    = mesh->cells.len;
   fl->halo_len     = store_ghost_halo ? mesh->halos.len   : 0;

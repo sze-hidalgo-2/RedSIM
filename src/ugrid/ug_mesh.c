@@ -702,16 +702,13 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
   mesh->cells.len           = block->cells_len;
 
   if (lane_index() == 0) {
-    mesh->cells.volume  = arena_push_count(arena, F32,            mesh->cells.len);
     mesh->cells.faces   = arena_push_count(arena, UG_Cell_Faces,  mesh->cells.len);
   }
 
-  lane_broadcast_ptr(&mesh->cells.volume, 0);
   lane_broadcast_ptr(&mesh->cells.faces,  0);
 
   // NOTE(cmat): Gather values based from partitioning.
   for Iter_Range(it, lane_range(mesh->cells.len)) {
-    mesh->cells.volume[it]  = mesh_global->cells.volume [block->cells_dat[it]];
     mesh->cells.faces[it]   = mesh_global->cells.faces  [block->cells_dat[it]];
   }
  
@@ -974,17 +971,20 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
     }
   }
 
-  // NOTE(cmat): Allocate centers, for both local and halo cells.
+  // NOTE(cmat): Allocate centers and volumes, for both local, halo and ghost cells.
   lane_barrier();
   if (lane_index() == 0) {
     mesh->cells.center = arena_push_count(arena, V3F, mesh->cells.len + mesh->halos.len + mesh->ghosts.len);
+    mesh->cells.volume = arena_push_count(arena, F32, mesh->cells.len + mesh->halos.len + mesh->ghosts.len);
   }
 
   lane_broadcast_ptr(&mesh->cells.center, 0);
+  lane_broadcast_ptr(&mesh->cells.volume, 0);
 
-  // NOTE(cmat): Assign local centers.
+  // NOTE(cmat): Assign local centers and volumes.
   for Iter_Range(it, lane_range(mesh->cells.len)) {
     mesh->cells.center[it] = mesh_global->cells.center[block->cells_dat[it]];
+    mesh->cells.volume[it] = mesh_global->cells.volume[block->cells_dat[it]];
   }
 
   lane_barrier();
@@ -993,6 +993,7 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
   for Iter_Range(it, lane_range(mesh->halos.len)) {
     U32 cell_global = mesh->halos.cell_global[it];
     mesh->cells.center[mesh->cells.len + it] = mesh_global->cells.center[cell_global];
+    mesh->cells.volume[mesh->cells.len + it] = mesh_global->cells.volume[cell_global];
   }
 
   lane_barrier();
@@ -1006,8 +1007,9 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
     V3F parent_face_center                                     = v3f(mesh->cells.faces[parent_cell].center_x[parent_face], mesh->cells.faces[parent_cell].center_y[parent_face], mesh->cells.faces[parent_cell].center_z[parent_face]);
     V3F parent_center_diff                                     = v3f_sub(parent_face_center, parent_center);
     mesh->cells.center[mesh->cells.len + mesh->halos.len + it] = v3f_add(parent_center, v3f_mul(2.f * v3f_dot(parent_center_diff, parent_normal), parent_normal));
+    mesh->cells.volume[mesh->cells.len + mesh->halos.len + it] = mesh->cells.volume[parent_cell];
   }
-
+ 
   // NOTE(cmat): Compute new mesh bounds.
   lane_barrier();
 
@@ -1172,10 +1174,10 @@ function void ug_mesh_ipc_distribute(UG_Mesh_Array *mesh_array) {
       ipc_rank_record_send(&request_list, mesh->grid.elems.len * sizeof(V4U), mesh->grid.elems.verts, rank, 0);
       
       // NOTE(cmat): UG_Cells
-      U64 center_count = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
-      ipc_rank_record_send(&request_list, center_count    * sizeof(V3F),              mesh->cells.center,         rank, 0);
-      ipc_rank_record_send(&request_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
-      ipc_rank_record_send(&request_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
+      U64 total_cell_count = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
+      ipc_rank_record_send(&request_list, total_cell_count    * sizeof(V3F),           mesh->cells.center, rank, 0);
+      ipc_rank_record_send(&request_list, total_cell_count    * sizeof(F32),           mesh->cells.volume, rank, 0);
+      ipc_rank_record_send(&request_list, mesh->cells.len     * sizeof(UG_Cell_Faces), mesh->cells.faces,  rank, 0);
       
       // NOTE(cmat): UG_Halos
       ipc_rank_record_send(&request_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);
@@ -1222,9 +1224,9 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
     mesh->grid.elems.verts    = arena_push_count(arena, V4U,            mesh->grid.elems.len);
 
     // NOTE(cmat): UG_Cells
-    U64 center_count = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
-    mesh->cells.center        = arena_push_count(arena, V3F,            center_count);
-    mesh->cells.volume        = arena_push_count(arena, F32,            mesh->cells.len);
+    U64 total_cell_count = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
+    mesh->cells.center        = arena_push_count(arena, V3F,            total_cell_count);
+    mesh->cells.volume        = arena_push_count(arena, F32,            total_cell_count);
     mesh->cells.faces         = arena_push_count(arena, UG_Cell_Faces,  mesh->cells.len);
 
     // NOTE(cmat): UG_Halos
@@ -1253,10 +1255,10 @@ function void ug_mesh_ipc_receive(Arena *arena, UG_Mesh *mesh, U32 rank) {
   ipc_rank_record_receive(&request_data_list, mesh->grid.elems.len * sizeof(V4U),         mesh->grid.elems.verts,     rank, 0);
 
   // NOTE(cmat): UG_Cells
-  U64 center_count = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
-  ipc_rank_record_receive(&request_data_list, center_count    * sizeof(V3F),              mesh->cells.center,         rank, 0);
-  ipc_rank_record_receive(&request_data_list, mesh->cells.len * sizeof(F32),              mesh->cells.volume,         rank, 0);
-  ipc_rank_record_receive(&request_data_list, mesh->cells.len * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
+  U64 total_cell_count = mesh->cells.len + mesh->halos.len + mesh->ghosts.len;
+  ipc_rank_record_receive(&request_data_list, total_cell_count * sizeof(V3F),              mesh->cells.center,         rank, 0);
+  ipc_rank_record_receive(&request_data_list, total_cell_count * sizeof(F32),              mesh->cells.volume,         rank, 0);
+  ipc_rank_record_receive(&request_data_list, mesh->cells.len  * sizeof(UG_Cell_Faces),    mesh->cells.faces,          rank, 0);
   
   // NOTE(cmat): UG_Halos
   ipc_rank_record_receive(&request_data_list, mesh->halos.block_len * sizeof(Range1_U64), mesh->halos.block_range,    rank, 0);

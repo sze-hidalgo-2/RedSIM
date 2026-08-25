@@ -4,6 +4,8 @@ typedef struct FL_State {
   F32   viscosity_mu;
   F32   thermal_conductivity;
   F32   prandtl_number;
+  F32   smagorinsky_cs;
+  F32   prandtl_turbulent;
 
   U64   inner_len;
   U64   halo_len;

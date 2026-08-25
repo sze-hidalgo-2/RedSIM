@@ -23,36 +23,45 @@ function void fl_solver_euler_halo_state_unpack_receive_data(FL_Solver_Euler *eu
   profiler_end_function();
 }
 
-function void fl_solver_euler_halo_gradient_pack_send_data(FL_Solver_Euler *euler, FL_Gradient_State *grad) {
+function void fl_solver_euler_halo_gradient_limiter_pack_send_data(FL_Solver_Euler *euler, FL_Gradient_State *grad, FL_Limiter_State *lim) {
   profiler_begin_function();
   UG_Mesh *mesh = euler->mesh;
   for Iter_Range(it_gather, lane_range(mesh->sends.len)) {
     U32 cell_gather = mesh->sends.cell_send[it_gather];
+    U64 base = it_gather * 20;
     for Iter_Index(it_state, 5) {
       for Iter_Index(it_component, 3) {
-        euler->halo_gradient_send_dat[it_gather * 15 + it_state * 3 + it_component] =
+        euler->halo_gradient_limiter_send_dat[base + it_state * 3 + it_component] =
             grad->states[it_state].grad_dat[it_component][cell_gather];
       }
+    }
+    for Iter_Index(it_state, 5) {
+      euler->halo_gradient_limiter_send_dat[base + 15 + it_state] = lim->states[it_state][cell_gather];
     }
   }
   lane_barrier();
   profiler_end_function();
 }
 
-function void fl_solver_euler_halo_gradient_unpack_receive_data(FL_Solver_Euler *euler, FL_Gradient_State *grad) {
+function void fl_solver_euler_halo_gradient_limiter_unpack_receive_data(FL_Solver_Euler *euler, FL_Gradient_State *grad, FL_Limiter_State *lim) {
   profiler_begin_function();
   UG_Mesh *mesh = euler->mesh;
   for Iter_Range(it_halo, lane_range(mesh->halos.len)) {
+    U64 base = it_halo * 20;
     for Iter_Index(it_state, 5) {
       for Iter_Index(it_component, 3) {
         grad->states[it_state].grad_dat[it_component][mesh->cells.len + it_halo] =
-            euler->halo_gradient_receive_dat[it_halo * 15 + it_state * 3 + it_component];
+            euler->halo_gradient_limiter_receive_dat[base + it_state * 3 + it_component];
       }
+    }
+    for Iter_Index(it_state, 5) {
+      lim->states[it_state][mesh->cells.len + it_halo] = euler->halo_gradient_limiter_receive_dat[base + 15 + it_state];
     }
   }
   lane_barrier();
   profiler_end_function();
 }
+
 function void fl_solver_euler_halo_state_build_request_list(FL_Solver_Euler *euler) {
   profiler_begin_function();
   UG_Mesh  *mesh = euler->mesh;
@@ -89,11 +98,11 @@ function void fl_solver_euler_halo_state_build_request_list(FL_Solver_Euler *eul
   profiler_end_function();
 }
 
-function void fl_solver_euler_halo_gradient_build_request_list(FL_Solver_Euler *euler) {
+function void fl_solver_euler_halo_gradient_limiter_build_request_list(FL_Solver_Euler *euler) {
   profiler_begin_function();
   UG_Mesh  *mesh = euler->mesh;
 
-  ipc_rank_request_list_init(&euler->halo_gradient_request_list);
+  ipc_rank_request_list_init(&euler->halo_gradient_limiter_request_list);
 
   for Iter_Index(it_rank, mesh->halos.block_len) {
     if (it_rank != ipc_rank_index()) {
@@ -103,7 +112,7 @@ function void fl_solver_euler_halo_gradient_build_request_list(FL_Solver_Euler *
       if (halo_len) {
         // NOTE(cmat): Receive halo data from neighbours.
         U64 own_tag = ipc_rank_index();
-        ipc_rank_record_receive(&euler->halo_gradient_request_list, halo_len * 5 * sizeof(F32) * 3, euler->halo_gradient_receive_dat + 5 * halo_range.min * 3, it_rank, own_tag);
+        ipc_rank_record_receive(&euler->halo_gradient_limiter_request_list, halo_len * 5 * sizeof(F32) * (3 + 1), euler->halo_gradient_limiter_receive_dat + 5 * halo_range.min * (3 + 1), it_rank, own_tag);
       }
     }
   }
@@ -116,7 +125,7 @@ function void fl_solver_euler_halo_gradient_build_request_list(FL_Solver_Euler *
       if (send_len) {
         // NOTE(cmat): Send "send" data to neighbours.
         U64 other_tag = it_rank;
-        ipc_rank_record_send(&euler->halo_gradient_request_list, send_len * 5 * sizeof(F32) * 3, euler->halo_gradient_send_dat + 5 * send_range.min * 3, it_rank, other_tag);
+        ipc_rank_record_send(&euler->halo_gradient_limiter_request_list, send_len * 5 * sizeof(F32) * (3 + 1), euler->halo_gradient_limiter_send_dat + 5 * send_range.min * (3 + 1), it_rank, other_tag);
       }
     }
   }
@@ -141,8 +150,8 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
   euler->halo_state_receive_len     = 5 * mesh->halos.len;
   euler->halo_state_send_len        = 5 * mesh->sends.len;
 
-  euler->halo_gradient_receive_len  = 5 * mesh->halos.len * 3;
-  euler->halo_gradient_send_len     = 5 * mesh->sends.len * 3;
+  euler->halo_gradient_limiter_receive_len  = 5 * mesh->halos.len * (3 + 1);
+  euler->halo_gradient_limiter_send_len     = 5 * mesh->sends.len * (3 + 1);
 
   if (lane_index() == 0) {
     euler->cell_time_step              = arena_push_count(arena, F64, mesh->cells.len);
@@ -152,8 +161,8 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
     euler->halo_state_receive_dat      = arena_push_count(arena, F32, euler->halo_state_receive_len);
     euler->halo_state_send_dat         = arena_push_count(arena, F32, euler->halo_state_send_len);
 
-    euler->halo_gradient_receive_dat   = arena_push_count(arena, F32, euler->halo_gradient_receive_len);
-    euler->halo_gradient_send_dat      = arena_push_count(arena, F32, euler->halo_gradient_send_len);
+    euler->halo_gradient_limiter_receive_dat   = arena_push_count(arena, F32, euler->halo_gradient_limiter_receive_len);
+    euler->halo_gradient_limiter_send_dat      = arena_push_count(arena, F32, euler->halo_gradient_limiter_send_len);
   }
 
   lane_broadcast_ptr(&euler->cell_time_step,              0);
@@ -161,12 +170,12 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
   lane_broadcast_ptr(&euler->lane_state_norm2,            0);
   lane_broadcast_ptr(&euler->halo_state_send_dat,         0);
   lane_broadcast_ptr(&euler->halo_state_receive_dat,      0);
-  lane_broadcast_ptr(&euler->halo_gradient_send_dat,      0);
-  lane_broadcast_ptr(&euler->halo_gradient_receive_dat,   0);
+  lane_broadcast_ptr(&euler->halo_gradient_limiter_send_dat,      0);
+  lane_broadcast_ptr(&euler->halo_gradient_limiter_receive_dat,   0);
 
   // NOTE(cmat): Build request list for halo synchronization.
-  fl_solver_euler_halo_state_build_request_list     (euler);
-  fl_solver_euler_halo_gradient_build_request_list  (euler);
+  fl_solver_euler_halo_state_build_request_list             (euler);
+  fl_solver_euler_halo_gradient_limiter_build_request_list  (euler);
 }
 
 function void fl_solver_compute_ghost(FL_Solver_Euler *euler, FL_State *state) {
@@ -272,8 +281,10 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
         right_state = fl_state_get(state, adjacent);
       }
 
-      FL_Flux flux_inviscid   = fl_flux_hllc    (left_state, right_state, normal, state->gamma);
-      FL_Flux flux_viscous    = fl_flux_viscous (left_primitive, left_grad, mesh->cells.center[it_cell], right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, mesh->cells.volume[it_cell], state->viscosity_mu, state->thermal_conductivity, state->gas_constant, state->gamma, state->prandtl_number);
+      F32 right_volume = mesh->cells.volume[adjacent];
+
+      FL_Flux flux_inviscid   = fl_flux_hllc                    (left_state, right_state, normal, state->gamma);
+      FL_Flux flux_viscous    = fl_flux_viscous_smagorinsky_LES (left_primitive, left_grad, mesh->cells.center[it_cell], right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, mesh->cells.volume[it_cell], right_volume, state->viscosity_mu, state->thermal_conductivity, state->gas_constant, state->gamma, state->prandtl_number, state->smagorinsky_cs, state->prandtl_turbulent);
       V5F     flux_total      = v5f_sub(flux_inviscid.state, flux_viscous.state);
       cell_residual           = v5f_sub(cell_residual, v5f_mul(area, flux_total));
       spectral_inviscid_sum  += (F64)area * (F64)flux_inviscid.lambda_max;
@@ -643,17 +654,17 @@ function void fl_solver_euler_compute_residual(FL_Solver_Euler *euler, FL_State 
   fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 3.f, mesh->groups.cells_boundary);
 
   // NOTE(cmat): Pack cells for gradient exchange.
-  fl_solver_euler_halo_gradient_pack_send_data(euler, &euler->gradient);
+  fl_solver_euler_halo_gradient_limiter_pack_send_data(euler, &euler->gradient, &euler->limiter);
 
   // NOTE(cmat): Start halo cell gradient exchange between partitions.
-  IPC_Request_Scope(&euler->halo_gradient_request_list) {
+  IPC_Request_Scope(&euler->halo_gradient_limiter_request_list) {
 
     // NOTE(cmat): Compute the residual of all interior cells.
     fl_solver_compute_residual_range(euler, state, residual, &euler->gradient, mesh->groups.cells_interior, compute_time_step, euler->cell_time_step);
   }
 
   // NOTE(cmat): Unpack received gradient state data.
-  fl_solver_euler_halo_gradient_unpack_receive_data(euler, &euler->gradient);
+  fl_solver_euler_halo_gradient_limiter_unpack_receive_data(euler, &euler->gradient, &euler->limiter);
 
   // NOTE(cmat): Compute residual for remaining boundary cells
   fl_solver_compute_residual_range(euler, state, residual, &euler->gradient, mesh->groups.cells_boundary, compute_time_step, euler->cell_time_step);
@@ -786,7 +797,9 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
   F64 time        = 0;
   U64 iteration   = 0;
 
-  V3_F64 residual_norm_first = v3_f64(0, 0, 0);
+  static B32    residual_norm_init  = 0;
+  static V3_F64 residual_norm_first = { 0, 0, 0 };
+
   for Iter_Index(it, 1000) {
   // while (time < .2f) {
     // fl_solver_euler_solve_local_step_forward_euler(euler, CFL);
@@ -806,7 +819,8 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
     residual_norm.y = f64_sqrt    (residual_norm.y);
     residual_norm.z = f64_sqrt    (residual_norm.z);
     
-    If_Unlikely (iteration == 1) {
+    If_Unlikely (!residual_norm_init) {
+      residual_norm_init = 1;
       residual_norm_first = residual_norm;
     }
 

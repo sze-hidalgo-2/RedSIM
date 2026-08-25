@@ -21,12 +21,12 @@ typedef struct FL_Solver_Euler {
   U64                 halo_state_send_len;
   F32                *halo_state_send_dat;
 
-  // NOTE(cmat): Halo gradient synchronization.
-  IPC_Request_List    halo_gradient_request_list;
-  U64                 halo_gradient_receive_len;
-  F32                *halo_gradient_receive_dat;
-  U64                 halo_gradient_send_len;
-  F32                *halo_gradient_send_dat;
+  // NOTE(cmat): Halo gradient + limiter synchronization.
+  IPC_Request_List    halo_gradient_limiter_request_list;
+  U64                 halo_gradient_limiter_receive_len;
+  F32                *halo_gradient_limiter_receive_dat;
+  U64                 halo_gradient_limiter_send_len;
+  F32                *halo_gradient_limiter_send_dat;
 } FL_Solver_Euler;
 
 typedef U32 Time_Step_Mode;
