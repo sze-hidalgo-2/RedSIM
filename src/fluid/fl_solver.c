@@ -800,7 +800,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
   static B32    residual_norm_init  = 0;
   static V3_F64 residual_norm_first = { 0, 0, 0 };
 
-  for Iter_Index(it, 1000) {
+  for Iter_Index(it, 10000) {
   // while (time < .2f) {
     // fl_solver_euler_solve_local_step_forward_euler(euler, CFL);
     fl_solver_euler_solve_local_step_SSP_RK_4_3(euler, CFL);
