@@ -346,8 +346,8 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scal
 
   // NOTE(cmat): Velocity
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[0 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v1[it], state->rho[it])); }
-  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[0 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v2[it], state->rho[it])); }
-  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[0 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v3[it], state->rho[it])); }
+  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[1 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v2[it], state->rho[it])); }
+  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[2 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v3[it], state->rho[it])); }
 
   flf_ensight_export_cell_variable(export, str08_lit("velocity"), 3, variable_buffer);
 
