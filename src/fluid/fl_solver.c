@@ -784,7 +784,7 @@ function void fl_solver_euler_solve_local_step_SSP_RK_4_3(FL_Solver_Euler *euler
   profiler_end_function();
 }
 
-function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
+function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
   profiler_begin_function();
   log_zone_start("Solving euler flow");
 
@@ -806,7 +806,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
     // fl_solver_euler_solve_local_step_forward_euler(euler, CFL);
     // fl_solver_euler_solve_local_step_SSP_RK_4_3(euler, CFL);
 
-#if 0
+#if 1
     F64 time_step = fl_solver_euler_solve_global_step_SSP_RK_4_3(euler, CFL);
 #else
     fl_solver_euler_solve_local_step_SSP_RK_4_3(euler, CFL);
@@ -855,4 +855,6 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
 
   log_zone_end();
   profiler_end_function();
+
+  return time;
 }

@@ -176,8 +176,8 @@ function void redsim_group_entry(void *user_data) {
 
   F32 time = 0;
   for Iter_Index(it, 100) {
-    fl_solver_euler_solve(&solver, 0.f);
-    time += 1.f;
+    F32 time_step = fl_solver_euler_solve(&solver, 0.f);
+    time += fl_scale_denormalize_time(&ref_scale, time_step);
 
     // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
     fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
