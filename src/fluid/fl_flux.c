@@ -105,9 +105,7 @@ force_inline function V3F fl_flux_grad_correct(V3F grad_avg, F32 phi_L, F32 phi_
 
 force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive, V3F left_grad[5], V3F left_center,
                                                               V5F right_primitive, V3F right_grad[5], V3F right_center,
-                                                              V3F normal, F32 area, F32 left_volume, F32 right_volume,
-                                                              F32 mu, F32 k_thermal, F32 gas_constant, F32 gamma,
-                                                              F32 prandtl, F32 smagorinsky_cs, F32 prandtl_turbulent) {
+                                                              V3F normal, F32 area, F32 left_volume, F32 right_volume, FL_Material *material) {
 
   V3F center_delta = v3f_sub(right_center, left_center);
   F32 dist         = v3f_len(center_delta);
@@ -142,9 +140,9 @@ force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive
   F32 rho_face   = .5f * (left_primitive.x1 + right_primitive.x1);
   F32 volume_avg = .5f * (left_volume + right_volume);
   F32 delta      = powf(volume_avg, 1.f / 3.f);
-  F32 mu_sgs     = rho_face * (smagorinsky_cs * smagorinsky_cs) * (delta * delta) * S_mag;
+  F32 mu_sgs     = rho_face * (material->smagorinsky_cs * material->smagorinsky_cs) * (delta * delta) * S_mag;
 
-  F32 mu_eff = mu + mu_sgs;
+  F32 mu_eff = material->viscosity_mu + mu_sgs;
 
   F32 tau_xx = 2.f * mu_eff * du.x - (2.f / 3.f) * mu_eff * div_u;
   F32 tau_yy = 2.f * mu_eff * dv.y - (2.f / 3.f) * mu_eff * div_u;
@@ -160,22 +158,22 @@ force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive
   F32 right_rho      = right_primitive.x1;
   F32 left_pressure  = left_primitive.x5;
   F32 right_pressure = right_primitive.x5;
-  V3F grad_T_l       = v3f_mul(1.f / (left_rho * left_rho * gas_constant), v3f_sub(v3f_mul(left_rho, left_grad[4]),  v3f_mul(left_pressure, left_grad[0])));
-  V3F grad_T_r       = v3f_mul(1.f / (right_rho * right_rho * gas_constant), v3f_sub(v3f_mul(right_rho, right_grad[4]), v3f_mul(right_pressure, right_grad[0])));
-  F32 T_L            = left_pressure  / (left_rho  * gas_constant);
-  F32 T_R            = right_pressure / (right_rho * gas_constant);
+  V3F grad_T_l       = v3f_mul(1.f / (left_rho * left_rho * material->gas_constant), v3f_sub(v3f_mul(left_rho, left_grad[4]),  v3f_mul(left_pressure, left_grad[0])));
+  V3F grad_T_r       = v3f_mul(1.f / (right_rho * right_rho * material->gas_constant), v3f_sub(v3f_mul(right_rho, right_grad[4]), v3f_mul(right_pressure, right_grad[0])));
+  F32 T_L            = left_pressure  / (left_rho  * material->gas_constant);
+  F32 T_R            = right_pressure / (right_rho * material->gas_constant);
   V3F grad_T_avg     = v3f_mul(.5f, v3f_add(grad_T_l, grad_T_r));
   V3F grad_T_face    = fl_flux_grad_correct (grad_T_avg, T_L, T_R, e_hat, dist_rcp);
 
   // NOTE(cmat): Effective conductivity = laminar + turbulent (from sgs eddy).
-  F32 cp            = (gamma / (gamma - 1.f)) * gas_constant;
-  F32 k_eff         = k_thermal + cp * mu_sgs / prandtl_turbulent;
+  F32 cp            = (material->gamma / (material->gamma - 1.f)) * material->gas_constant;
+  F32 k_eff         = material->thermal_conductivity + cp * mu_sgs / material->prandtl_turbulent;
   F32 heat_term     = k_eff * v3f_dot(grad_T_face, normal);
   F32 work_term     = v3f_dot(tau_normal, face_velocity);
   V5F viscous_state = v5f(0.f, tau_normal.x, tau_normal.y, tau_normal.z, work_term + heat_term);
 
   // NOTE(cmat): Stability limit uses mu_eff, since eddy viscosity also diffuses momentum.
-  F32 visc_coeff       = f32_max(4.f / 3.f, gamma / prandtl);
+  F32 visc_coeff       = f32_max(4.f / 3.f, material->gamma / material->prandtl_number);
   F32 lambda_visc_face = (mu_eff / rho_face) * visc_coeff * (area * area) / volume_avg;
 
   FL_Flux flux        = { };

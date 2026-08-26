@@ -285,7 +285,7 @@ function void flf_ensight_export_cell_variable(FLF_Ensight_Export *export, Str08
   profiler_end_function();
 }
 
-function void flf_ensight_export_flow(FLF_Ensight_Export *export, F32 time, FL_State *state, F64 *cell_time_step) {
+function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scale, F32 time, FL_State *state, F64 *cell_time_step) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(0);
   log_zone_start("Exporting ensight flow state");
@@ -302,30 +302,42 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, F32 time, FL_S
   lane_broadcast_ptr(&variable_buffer, 0);
 
   // NOTE(cmat): Density
-  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = state->rho[it]; }
+  for Iter_Range(it, lane_range(cell_count)) {
+    variable_buffer[it] = fl_scale_denormalize_density(scale, state->rho[it]);
+  }
   flf_ensight_export_cell_variable(export, str08_lit("density"), 1, variable_buffer);
 
   // NOTE(cmat): Energy
-  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = state->energy[it]; }
+  for Iter_Range(it, lane_range(cell_count)) {
+    variable_buffer[it] = fl_scale_denormalize_energy(scale, state->energy[it]);
+  }
   flf_ensight_export_cell_variable(export, str08_lit("energy"), 1, variable_buffer);
 
   // NOTE(cmat): Pressure
-  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = fl_state_get_pressure(state, it); }
+  for Iter_Range(it, lane_range(cell_count)) {
+    variable_buffer[it] = fl_scale_denormalize_pressure(scale, fl_state_get_pressure(state, it));
+  }
   flf_ensight_export_cell_variable(export, str08_lit("pressure"), 1, variable_buffer);
 
   // NOTE(cmat): Temperature
-  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = fl_state_get_temperature(state, it); }
+  for Iter_Range(it, lane_range(cell_count)) {
+    variable_buffer[it] = fl_scale_denormalize_temperature(scale, fl_state_get_temperature(state, it));
+  }
   flf_ensight_export_cell_variable(export, str08_lit("temperature"), 1, variable_buffer);
 
   // NOTE(cmat): Potential Temperature (Poisson's Equation for potential temperature).
   for Iter_Range(it, lane_range(cell_count)) {
-    variable_buffer[it] = fl_state_get_temperature(state, it) * powf(1.0e12f / fl_state_get_pressure(state, it), (state->gamma - 1.f) / state->gamma);
+    F32 temperature = fl_scale_denormalize_temperature(scale, fl_state_get_temperature(state, it));
+    F32 pressure    = fl_scale_denormalize_pressure(scale, fl_state_get_pressure(state, it));
+    variable_buffer[it] = temperature * powf(1.0e12f / pressure, (state->material.gamma - 1.f) / state->material.gamma);
   }
 
   flf_ensight_export_cell_variable(export, str08_lit("potential_temperature"), 1, variable_buffer);
 
   // NOTE(cmat): Time Steps
-  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = (F32)(cell_time_step[it]); }
+  for Iter_Range(it, lane_range(cell_count)) {
+    variable_buffer[it] = fl_scale_denormalize_time(scale, (F32)(cell_time_step[it]));
+  }
   flf_ensight_export_cell_variable(export, str08_lit("time_step"), 1, variable_buffer);
 
   // NOTE(cmat): Local Index
@@ -333,9 +345,9 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, F32 time, FL_S
   flf_ensight_export_cell_variable(export, str08_lit("local_index"), 1, variable_buffer);
 
   // NOTE(cmat): Velocity
-  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[0 * cell_count + it] = f32_div_safe(state->rho_v1[it], state->rho[it]); }
-  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[1 * cell_count + it] = f32_div_safe(state->rho_v2[it], state->rho[it]); }
-  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[2 * cell_count + it] = f32_div_safe(state->rho_v3[it], state->rho[it]); }
+  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[0 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v1[it], state->rho[it])); }
+  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[0 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v2[it], state->rho[it])); }
+  for Iter_Range(it, lane_range(cell_count)) { variable_buffer[0 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v3[it], state->rho[it])); }
 
   flf_ensight_export_cell_variable(export, str08_lit("velocity"), 3, variable_buffer);
 

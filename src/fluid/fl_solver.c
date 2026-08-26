@@ -134,15 +134,15 @@ function void fl_solver_euler_halo_gradient_limiter_build_request_list(FL_Solver
   profiler_end_function();
 }
 
-function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boundary, UG_Mesh *mesh, Arena *arena) {
+function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boundary, FL_Material material, UG_Mesh *mesh, Arena *arena) {
   Zero_Fill(euler);
 
   euler->mesh                 = mesh;
   euler->boundary             = boundary;
 
-  fl_state_init(&euler->flow_1, mesh, 1, arena);
-  fl_state_init(&euler->flow_2, mesh, 1, arena);
-  fl_state_init(&euler->residual, mesh, 0, arena);
+  fl_state_init(&euler->flow_1,   material, mesh, 1, arena);
+  fl_state_init(&euler->flow_2,   material, mesh, 1, arena);
+  fl_state_init(&euler->residual, material, mesh, 0, arena);
 
   fl_gradient_state_init  (&euler->gradient, mesh, 1, arena);
   fl_limiter_state_init   (&euler->limiter,  mesh, 1, arena);
@@ -192,7 +192,7 @@ function void fl_solver_compute_ghost(FL_Solver_Euler *euler, FL_State *state) {
     UG_Cell_Faces *faces  = &mesh->cells.faces[cell_parent_index];
     V3F normal            = v3f(faces->normal_x[face_parent_index], faces->normal_y[face_parent_index], faces->normal_z[face_parent_index]);
     V5F inner_state       = fl_state_get(state, cell_parent_index);
-    V5F ghost_state       = fl_boundary_map_ghost(euler->boundary, marker_index, inner_state, normal, state->gamma);
+    V5F ghost_state       = fl_boundary_map_ghost(euler->boundary, marker_index, inner_state, normal, state->material.gamma);
 
     fl_state_set(state, flow_ghost_index, ghost_state);
   }
@@ -283,8 +283,9 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
 
       F32 right_volume = mesh->cells.volume[adjacent];
 
-      FL_Flux flux_inviscid   = fl_flux_hllc                    (left_state, right_state, normal, state->gamma);
-      FL_Flux flux_viscous    = fl_flux_viscous_smagorinsky_LES (left_primitive, left_grad, mesh->cells.center[it_cell], right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, mesh->cells.volume[it_cell], right_volume, state->viscosity_mu, state->thermal_conductivity, state->gas_constant, state->gamma, state->prandtl_number, state->smagorinsky_cs, state->prandtl_turbulent);
+      FL_Flux flux_inviscid   = fl_flux_hllc                    (left_state, right_state, normal, state->material.gamma);
+      FL_Flux flux_viscous    = fl_flux_viscous_smagorinsky_LES (left_primitive, left_grad, mesh->cells.center[it_cell], right_primitive, right_grad,
+                                                                 mesh->cells.center[adjacent], normal, area, mesh->cells.volume[it_cell], right_volume, &state->material);
       V5F     flux_total      = v5f_sub(flux_inviscid.state, flux_viscous.state);
       cell_residual           = v5f_sub(cell_residual, v5f_mul(area, flux_total));
       spectral_inviscid_sum  += (F64)area * (F64)flux_inviscid.lambda_max;
@@ -817,6 +818,11 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
 
 #if 1
     if (!residual_norm_init || it == 9999) {
+
+      // NOTE(cmat): Compute current residual.
+      fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 0);
+      
+      // NOTE(cmat): Compute residual norm.
       V3_F64 residual_norm = fl_solver_euler_compute_state_norm2(euler, &euler->residual, range1_u64(0, euler->mesh->cells.len));
 
       residual_norm   = v3_f64_div  (residual_norm, (F64)euler->mesh->cells.len);

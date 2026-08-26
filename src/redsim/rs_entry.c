@@ -92,66 +92,76 @@ function void redsim_group_entry(void *user_data) {
 
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
-#if 0
+
+  F32 wind_angle = f32_pi / 4.f;
+
   FL_Boundary_Farfield farfield = {
     .density  = 1.225f,
-    .velocity = v3f(3.f, 4.f, 0.f),
+    .velocity = v3f_mul(40.f, v3f(f32_cos(wind_angle), f32_sin(wind_angle), 0)),
     .pressure = 101325.f,
   };
-#else
-  FL_Boundary_Farfield farfield = {
-    .density  = 1.f,
-    .velocity = v3f(40.f * 0.008728f, 40.f * 0.011637f, 0.f),
-    .pressure = 0.7143f,
-  };
-#endif
-  
-  // NOTE(cmat): Init boundary map.
 
+  FL_Material material = {};
+  fl_material_init(&material, 1.4f, 1.81e-5f, 0.71f);
+
+  FL_Boundary_Farfield farfield_old = farfield;
+  FL_Material          material_old = material;
+
+  FL_Scale ref_scale = {};
+  fl_scale_init(&ref_scale, &mesh, farfield.density, farfield.pressure, 1.4f);
+
+  // NOTE(cmat): Normalize all simulated quantities.
+  log_info("Normalizing Qualtities");
+
+  Log_Zone_Scope("Reference Scale") {
+    log_info("length:      %10.2e", ref_scale.length);
+    log_info("density:     %10.2e", ref_scale.density);
+    log_info("pressure:    %10.2e", ref_scale.density);
+    log_info("sound speed: %10.2e", ref_scale.sound_speed);
+  }
+
+  fl_scale_normalize_farfield(&ref_scale, &farfield);
+  fl_scale_normalize_material(&ref_scale, &material);
+
+  Log_Zone_Scope("Farfield Boundary") {
+    log_info("density:     %10.2e -> %10.2e",               farfield_old.density, farfield.density);
+    log_info("velocity x:  %10.2e -> %10.2e",               farfield_old.velocity.x, farfield.velocity.x);
+    log_info("velocity y:  %10.2e -> %10.2e",               farfield_old.velocity.y, farfield.velocity.y);
+    log_info("velocity z:  %10.2e -> %10.2e",               farfield_old.velocity.z, farfield.velocity.z);
+    log_info("pressure:    %10.2e -> %10.2e",               farfield_old.pressure, farfield.pressure);
+  }
+
+  Log_Zone_Scope("Material") {
+    log_info("gamma:                %10.2e -> %10.2e" , material_old.gamma                , material.gamma);
+    log_info("gas_constant:         %10.2e -> %10.2e" , material_old.gas_constant         , material.gas_constant);
+    log_info("molecular viscosity:  %10.2e -> %10.2e" , material_old.viscosity_mu         , material.viscosity_mu);
+    log_info("thermal conductivity: %10.2e -> %10.2e" , material_old.thermal_conductivity , material.thermal_conductivity);
+    log_info("prandtl number:       %10.2e -> %10.2e" , material_old.prandtl_number,        material.prandtl_number);
+    log_info("smagorinsky cs:       %10.2e -> %10.2e" , material_old.smagorinsky_cs,        material.smagorinsky_cs);
+    log_info("prandtl turbulent:    %10.2e -> %10.2e" , material_old.prandtl_turbulent,     material.prandtl_turbulent);
+  }
+
+  log_info("time scaling: %10.2e", fl_scale_denormalize_time(&ref_scale, 1.f))
+
+  // NOTE(cmat): Init boundary map.
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
-
-#if 0
-    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 3) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 4) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
-    *fl_boundary_map_by_index(&boundary, 5) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
-#else
-
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
-
-    /*
-    // NOTE(cmat): WING
-    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
-
-    // NOTE(cmat): SYMMETRY
-    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Slip };
-
-    // NOTE(cmat): FARFIELD
-    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
-    */
-#endif
   }
 
   // NOTE(cmat): Init solver.
   lane_barrier();
 
   log_info("Initializing solver");
-  fl_solver_euler_init(&solver, &boundary, &mesh, &permanent_arena);
+  fl_solver_euler_init(&solver, &boundary, material, &mesh, &permanent_arena);
 
   // NOTE(cmat): Initial condition.
   lane_barrier();
-  log_info("Initializing flow to SOD condition");
-#if 0
-  fl_setup_sod(&solver.flow_1, &mesh);
-#else
+  log_info("Initializing flow with farfield");
   fl_state_set_inner_from_farfield(&solver.flow_1, &farfield);
-#endif
 
   // NOTE(cmat): Iterate and solve.
   lane_barrier();
@@ -159,13 +169,13 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Export results.
   FLF_Ensight_Export export = { };
   flf_ensight_export_init(&export, str08_lit("sod"), &mesh, &permanent_arena);
-  flf_ensight_export_flow(&export, 0.0f, &solver.flow_1, solver.cell_time_step);
+  flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, solver.cell_time_step);
 
   F32 time = 0;
   for Iter_Index(it, 100) {
     fl_solver_euler_solve(&solver, 0.f);
     time += 1.f;
-    flf_ensight_export_flow(&export, time, &solver.flow_1, solver.cell_time_step);
+    flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, solver.cell_time_step);
   }
 
   log_zone_end();

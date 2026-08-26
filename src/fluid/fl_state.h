@@ -1,4 +1,4 @@
-typedef struct FL_State {
+typedef struct FL_Material {
   F32   gamma;
   F32   gas_constant;
   F32   viscosity_mu;
@@ -6,10 +6,14 @@ typedef struct FL_State {
   F32   prandtl_number;
   F32   smagorinsky_cs;
   F32   prandtl_turbulent;
+} FL_Material;
 
-  U64   inner_len;
-  U64   halo_len;
-  U64   ghost_len;
+typedef struct FL_State {
+  FL_Material   material;
+
+  U64           inner_len;
+  U64           halo_len;
+  U64           ghost_len;
 
   union {
     struct {
@@ -69,10 +73,16 @@ typedef struct FL_Limiter_State {
 
     F32 *states[5];
   };
-
 } FL_Limiter_State;
 
-function void fl_state_init                     (FL_State *fl, UG_Mesh *mesh, B32 store_ghost_halo, Arena *arena);
+typedef struct FL_Scale {
+  F32 length;
+  F32 density;
+  F32 pressure;
+  F32 sound_speed;
+} FL_Scale;
+
+function void fl_state_init                     (FL_State *fl, FL_Material material, UG_Mesh *mesh, B32 store_ghost_halo, Arena *arena);
 function void fl_state_set                      (FL_State *fl, U64 at, V5F state);
 function V5F  fl_state_get                      (FL_State *fl, U64 at);
 function F32  fl_state_get_pressure             (FL_State *fl, U64 at);
