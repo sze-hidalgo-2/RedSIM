@@ -163,8 +163,8 @@ function void redsim_group_entry(void *user_data) {
 
   F32 time = 0;
   for Iter_Index(it, 100) {
-    fl_solver_euler_solve(&solver, 0.f);
-    time += 1.f;
+    time += fl_solver_euler_solve(&solver, 0.f);
+    // time += 1.f;
     flf_ensight_export_flow(&export, time, &solver.flow_1, solver.cell_time_step);
   }
 
