@@ -101,7 +101,7 @@ function void redsim_group_entry(void *user_data) {
 #else
   FL_Boundary_Farfield farfield = {
     .density  = 1.f,
-    .velocity = v3f(0.008728f, 0.011637f, 0.f),
+    .velocity = v3f(40.f * 0.008728f, 40.f * 0.011637f, 0.f),
     .pressure = 0.7143f,
   };
 #endif
@@ -162,7 +162,7 @@ function void redsim_group_entry(void *user_data) {
   flf_ensight_export_flow(&export, 0.0f, &solver.flow_1, solver.cell_time_step);
 
   F32 time = 0;
-  for Iter_Index(it, 10) {
+  for Iter_Index(it, 100) {
     fl_solver_euler_solve(&solver, 0.f);
     time += 1.f;
     flf_ensight_export_flow(&export, time, &solver.flow_1, solver.cell_time_step);

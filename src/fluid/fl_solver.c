@@ -805,7 +805,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
     // fl_solver_euler_solve_local_step_forward_euler(euler, CFL);
     // fl_solver_euler_solve_local_step_SSP_RK_4_3(euler, CFL);
 
-#if 0
+#if 1
     F64 time_step = fl_solver_euler_solve_global_step_SSP_RK_4_3(euler, CFL);
 #else
     fl_solver_euler_solve_local_step_SSP_RK_4_3(euler, CFL);
@@ -816,23 +816,25 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
     iteration    += 1;
 
 #if 1
-    V3_F64 residual_norm = fl_solver_euler_compute_state_norm2(euler, &euler->residual, range1_u64(0, euler->mesh->cells.len));
+    if (!residual_norm_init || it == 9999) {
+      V3_F64 residual_norm = fl_solver_euler_compute_state_norm2(euler, &euler->residual, range1_u64(0, euler->mesh->cells.len));
 
-    residual_norm   = v3_f64_div  (residual_norm, (F64)euler->mesh->cells.len);
-    residual_norm.x = f64_sqrt    (residual_norm.x);
-    residual_norm.y = f64_sqrt    (residual_norm.y);
-    residual_norm.z = f64_sqrt    (residual_norm.z);
-    
-    If_Unlikely (!residual_norm_init) {
-      residual_norm_init = 1;
-      residual_norm_first = residual_norm;
+      residual_norm   = v3_f64_div  (residual_norm, (F64)euler->mesh->cells.len);
+      residual_norm.x = f64_sqrt    (residual_norm.x);
+      residual_norm.y = f64_sqrt    (residual_norm.y);
+      residual_norm.z = f64_sqrt    (residual_norm.z);
+      
+      If_Unlikely (!residual_norm_init) {
+        residual_norm_init = 1;
+        residual_norm_first = residual_norm;
+      }
+
+      residual_norm.x /= residual_norm_first.x;
+      residual_norm.y /= residual_norm_first.y;
+      residual_norm.z /= residual_norm_first.z;
+
+      log_info("TIME %.2g | TIMESTEP %.2g | ITERATION %'llu | RESIDUAL %.2g, %.2g, %.2g", time, time_step, iteration, residual_norm.x, residual_norm.y, residual_norm.z);
     }
-
-    residual_norm.x /= residual_norm_first.x;
-    residual_norm.y /= residual_norm_first.y;
-    residual_norm.z /= residual_norm_first.z;
-
-    log_info("TIME %.2g | TIMESTEP %.2g | ITERATION %'llu | RESIDUAL %.2g, %.2g, %.2g", time, time_step, iteration, residual_norm.x, residual_norm.y, residual_norm.z);
 #endif
   }
 
