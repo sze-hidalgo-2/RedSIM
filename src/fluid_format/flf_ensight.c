@@ -197,6 +197,7 @@ function void flf_ensight_export_init(FLF_Ensight_Export *export, Str08 folder_p
           "scalar per element: 1 potential_temperature  data/cell_potential_temperature.bin******"              "\n"
           "scalar per element: 1 time_step              data/cell_time_step.bin******"                          "\n"
           "scalar per element: 1 local_index            data/cell_local_index.bin******"                        "\n"
+          "scalar per element: 1 q_criterion            data/cell_q_criterion.bin******"                        "\n"
           "vector per element: 1 velocity               data/cell_velocity.bin******"                           "\n"
           "TIME"                                                                                                "\n"
           "time set: 1"                                                                                         "\n"
@@ -285,7 +286,7 @@ function void flf_ensight_export_cell_variable(FLF_Ensight_Export *export, Str08
   profiler_end_function();
 }
 
-function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scale, F32 time, FL_State *state, F64 *cell_time_step) {
+function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scale, F32 time, FL_State *state, FL_Gradient_State *grad, F64 *cell_time_step) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(0);
   log_zone_start("Exporting ensight flow state");
@@ -348,9 +349,13 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scal
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[0 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v1[it], state->rho[it])); }
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[1 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v2[it], state->rho[it])); }
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[2 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v3[it], state->rho[it])); }
-
   flf_ensight_export_cell_variable(export, str08_lit("velocity"), 3, variable_buffer);
 
+  // NOTE(cmat): Q-criterion
+  for Iter_Range(it, lane_range(cell_count)) {
+    variable_buffer[it] = fl_gradient_q_criterion(grad, it);
+  }
+  flf_ensight_export_cell_variable(export, str08_lit("q_criterion"), 1, variable_buffer);
 
   // NOTE(cmat): Export new timestep.
   // NOTE(cmat): First, we modify the number of steps.

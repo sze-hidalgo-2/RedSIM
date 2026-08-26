@@ -169,13 +169,19 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Export results.
   FLF_Ensight_Export export = { };
   flf_ensight_export_init(&export, str08_lit("sod"), &mesh, &permanent_arena);
-  flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, solver.cell_time_step);
+
+  // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
+  fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
+  flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step);
 
   F32 time = 0;
   for Iter_Index(it, 100) {
     fl_solver_euler_solve(&solver, 0.f);
     time += 1.f;
-    flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, solver.cell_time_step);
+
+    // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
+    fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
+    flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step);
   }
 
   log_zone_end();

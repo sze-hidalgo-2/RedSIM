@@ -127,6 +127,26 @@ function F32 fl_state_get_temperature(FL_State *fl, U64 at) {
   return temperature;
 }
 
+function F32 fl_gradient_q_criterion(FL_Gradient_State *grad, U32 at) {
+  // NOTE(cmat): To compute the Q-criterion, we split the velocity gradient tensor
+  // - into a symmetric and assymetric part.
+
+  F32 ux = grad->v1.grad_x[at];
+  F32 uy = grad->v1.grad_y[at];
+  F32 uz = grad->v1.grad_z[at];
+
+  F32 vx = grad->v2.grad_x[at];
+  F32 vy = grad->v2.grad_y[at];
+  F32 vz = grad->v2.grad_z[at];
+
+  F32 wx = grad->v3.grad_x[at];
+  F32 wy = grad->v3.grad_y[at];
+  F32 wz = grad->v3.grad_z[at];
+
+  F32 q_criterion = -0.5f * (ux * ux + vy * vy + wz * wz + 2.0f * (uy * vx + uz * wx + vz * wy));
+  return q_criterion;
+}
+
 function void fl_setup_sod(FL_State *fl, UG_Mesh *mesh) {
   for Iter_Range(it, lane_range(mesh->cells.len)) {
     V3F center     = mesh->cells.center[it];
@@ -214,6 +234,11 @@ function F32 fl_scale_denormalize_velocity(FL_Scale *scale, F32 velocity) {
 
 function F32 fl_scale_denormalize_temperature(FL_Scale *scale, F32 temperature) {
   F32 result = temperature * scale->pressure / scale->density;
+  return result;
+}
+
+function F32 fl_scale_denormalize_q_criterion(FL_Scale *scale, F32 q) {
+  F32 result = q * (scale->sound_speed / scale->length) * (scale->sound_speed / scale->length);
   return result;
 }
 
