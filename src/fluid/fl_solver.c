@@ -805,7 +805,7 @@ function void fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
     // fl_solver_euler_solve_local_step_forward_euler(euler, CFL);
     // fl_solver_euler_solve_local_step_SSP_RK_4_3(euler, CFL);
 
-#if 1
+#if 0
     F64 time_step = fl_solver_euler_solve_global_step_SSP_RK_4_3(euler, CFL);
 #else
     fl_solver_euler_solve_local_step_SSP_RK_4_3(euler, CFL);
