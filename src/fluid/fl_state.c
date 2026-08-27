@@ -183,6 +183,11 @@ function void fl_material_init(FL_Material *material, F32 gamma, F32 viscosity, 
   material->thermal_conductivity = viscosity / ((gamma - 1.f) * prandtl_number);
   material->smagorinsky_cs       = 0.17f;
   material->prandtl_turbulent    = 0.9f;
+
+  // NOTE(cmat): Precomputed values for smagorinsky LES.
+  material->cp                   = (material->gamma / (material->gamma - 1.f)) * material->gas_constant;
+  material->visc_coeff           = f32_max(4.f / 3.f, material->gamma / material->prandtl_number);
+  material->smagorinsky_cs2      = material->smagorinsky_cs * material->smagorinsky_cs;
 }
 
 function void fl_scale_init(FL_Scale *scale, UG_Mesh *mesh, F32 density, F32 pressure, F32 gamma) {

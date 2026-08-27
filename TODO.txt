@@ -1,1 +1,20 @@
-- Limiter value halo exchange.
+1. store face_center / cell_center delta instead.
+
+2. Material-derived "constants" are being recomputed per face, forever
+
+Inside fl_flux_viscous_smagorinsky_LES (inlined into compute_residual_range's hot loop):
+
+c
+F32 cp         = (material->gamma / (material->gamma - 1.f)) * material->gas_constant;
+F32 visc_coeff = f32_max(4.f / 3.f, material->gamma / material->prandtl_number);
+F32 mu_sgs     = ... (material->smagorinsky_cs * material->smagorinsky_cs) ...
+
+None of these depend on anything per-cell or per-face — material doesn't change during the solve. Precompute once (e.g. at fl_solver_euler_init or wherever FL_Material is built) and store as fields:
+
+c
+material->cp                 = (material->gamma / (material->gamma - 1.f)) * material->gas_constant;
+material->visc_coeff         = f32_max(4.f / 3.f, material->gamma / material->prandtl_number);
+material->smagorinsky_cs2    = material->smagorinsky_cs * material->smagorinsky_cs;
+
+Then just read material->cp etc. in the flux function. This removes 2 divisions + a couple multiplies per face, unconditionally, forever. Zero risk.
+

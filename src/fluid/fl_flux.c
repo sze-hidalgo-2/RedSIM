@@ -1,3 +1,4 @@
+#if 0
 force_inline function FL_Flux fl_flux_hllc(V5F UL, V5F UR, V3F n, F32 gamma) {
   FL_Flux flux = { };
 
@@ -96,6 +97,116 @@ force_inline function FL_Flux fl_flux_hllc(V5F UL, V5F UR, V3F n, F32 gamma) {
 
   return flux;
 }
+
+#else
+
+force_inline function FL_Flux fl_flux_hllc(V5F UL, V5F UR, V3F n, F32 gamma) {
+  FL_Flux flux = { };
+
+  // NOTE(cmat): Density.
+  F32 rL = UL.x1;
+  F32 rR = UR.x1;
+
+  F32 rL_rcp = 1.f / rL;
+  F32 rR_rcp = 1.f / rR;
+
+  // NOTE(cmat): Mass-Flow.
+  V3F mL = UL.x234;
+  V3F mR = UR.x234;
+
+  // NOTE(cmat): Velocity.
+  V3F uL = v3f_mul(rL_rcp, mL);
+  V3F uR = v3f_mul(rR_rcp, mR);
+
+  // NOTE(cmat): Project to normal vector.
+  F32 unL = v3f_dot(uL, n);
+  F32 unR = v3f_dot(uR, n);
+
+  // NOTE(cmat): Velocity magnitude squared.
+  F32 qL  = v3f_len2(uL);
+  F32 qR  = v3f_len2(uR);
+
+  // NOTE(cmat): Pressure.
+  F32 pL  = (gamma - 1.f) * (UL.x5 - .5f * rL * qL);
+  F32 pR  = (gamma - 1.f) * (UR.x5 - .5f * rR * qR);
+
+  // NOTE(cmat): Speed of sound.
+  F32 aL  = f32_sqrt(gamma * pL * rL_rcp);
+  F32 aR  = f32_sqrt(gamma * pR * rR_rcp);
+
+  // NOTE(cmat): Left and right wave speeds.
+  F32 SL = f32_min(unL - aL, unR - aR);
+  F32 SR = f32_max(unL + aL, unR + aR);
+
+  // NOTE(cmat): Contact wave speed.
+  F32 SM = (pR - pL + rL * unL * (SL - unL) - rR * unR * (SR - unR));
+  SM    /= (rL * (SL - unL) - rR * (SR - unR));
+
+  // NOTE(cmat): Physical flux for left state.
+  V5F FL = {
+    .x1 = rL * unL,
+    .x2 = mL.x * unL + pL * n.x,
+    .x3 = mL.y * unL + pL * n.y,
+    .x4 = mL.z * unL + pL * n.z,
+    .x5 = (UL.x5 + pL) * unL,
+  };
+
+  // NOTE(cmat): Physical flux for right state.
+  V5F FR = {
+    .x1 = rR * unR,
+    .x2 = mR.x * unR + pR * n.x,
+    .x3 = mR.y * unR + pR * n.y,
+    .x4 = mR.z * unR + pR * n.z,
+    .x5 = (UR.x5 + pR) * unR,
+  };
+
+  // NOTE(cmat): Select the correct region.
+  if (0.f <= SL) {
+    flux.state = FL;
+
+  } else if (0.f >= SR) {
+    flux.state = FR;
+
+  } else if (SM  >= 0.f)  {
+    F32 SL_minus_unL_rcp = 1.f / (SL - SM);
+    F32 rs = rL * (SL - unL) * SL_minus_unL_rcp;
+    V3F us = v3f_add(uL, v3f_mul((SM - unL), n));
+    F32 Es = rs * (UL.x5 * rL_rcp + (SM - unL) * (SM + pL / (rL * (SL - unL))));
+
+    V5F U_star = {
+      .x1 = rs,
+      .x2 = rs * us.x,
+      .x3 = rs * us.y,
+      .x4 = rs * us.z,
+      .x5 = Es,
+    };
+
+    flux.state = v5f_add(FL, v5f_mul(SL, v5f_sub(U_star, UL)));
+
+  } else {
+    F32 SR_minus_unR_rcp = 1.f / (SR - SM);
+    F32 rs = rR * (SR - unR) * SR_minus_unR_rcp;
+    V3F us = v3f_add(uR, v3f_mul((SM - unR), n));
+    F32 Es = rs * (UR.x5 * rR_rcp + (SM - unR) * (SM + pR / (rR * (SR - unR))));
+
+    V5F U_star = {
+      .x1 = rs,
+      .x2 = rs * us.x,
+      .x3 = rs * us.y,
+      .x4 = rs * us.z,
+      .x5 = Es,
+    };
+
+    flux.state = v5f_add(FR, v5f_mul(SR, v5f_sub(U_star, UR)));
+  }
+
+  // NOTE(cmat): Maximum signal speed for CFL computation.
+  flux.lambda_max = f32_max(f32_abs(SL), f32_abs(SR));
+  return flux;
+}
+
+#endif
+
 force_inline function V3F fl_flux_grad_correct(V3F grad_avg, F32 phi_L, F32 phi_R, V3F e_hat, F32 dist_rcp) {
   F32 directional_avg   = v3f_dot(grad_avg, e_hat);
   F32 directional_exact = (phi_R - phi_L) * dist_rcp;
@@ -140,7 +251,7 @@ force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive
   F32 rho_face   = .5f * (left_primitive.x1 + right_primitive.x1);
   F32 volume_avg = .5f * (left_volume + right_volume);
   F32 delta      = cbrtf(volume_avg);
-  F32 mu_sgs     = rho_face * (material->smagorinsky_cs * material->smagorinsky_cs) * (delta * delta) * S_mag;
+  F32 mu_sgs     = rho_face * material->smagorinsky_cs2 * (delta * delta) * S_mag;
 
   F32 mu_eff = material->viscosity_mu + mu_sgs;
 
@@ -166,15 +277,13 @@ force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive
   V3F grad_T_face    = fl_flux_grad_correct (grad_T_avg, T_L, T_R, e_hat, dist_rcp);
 
   // NOTE(cmat): Effective conductivity = laminar + turbulent (from sgs eddy).
-  F32 cp            = (material->gamma / (material->gamma - 1.f)) * material->gas_constant;
-  F32 k_eff         = material->thermal_conductivity + cp * mu_sgs / material->prandtl_turbulent;
+  F32 k_eff         = material->thermal_conductivity + material->cp * mu_sgs / material->prandtl_turbulent;
   F32 heat_term     = k_eff * v3f_dot(grad_T_face, normal);
   F32 work_term     = v3f_dot(tau_normal, face_velocity);
   V5F viscous_state = v5f(0.f, tau_normal.x, tau_normal.y, tau_normal.z, work_term + heat_term);
 
   // NOTE(cmat): Stability limit uses mu_eff, since eddy viscosity also diffuses momentum.
-  F32 visc_coeff       = f32_max(4.f / 3.f, material->gamma / material->prandtl_number);
-  F32 lambda_visc_face = (mu_eff / rho_face) * visc_coeff * (area * area) / volume_avg;
+  F32 lambda_visc_face = (mu_eff / rho_face) * material->visc_coeff * (area * area) / volume_avg;
 
   FL_Flux flux        = { };
   flux.state          = viscous_state;

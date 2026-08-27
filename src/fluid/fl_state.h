@@ -6,6 +6,11 @@ typedef struct FL_Material {
   F32   prandtl_number;
   F32   smagorinsky_cs;
   F32   prandtl_turbulent;
+
+  // NOTE(cmat): Precomputed values for smagorinsky LES.
+  F32   cp;
+  F32   visc_coeff;
+  F32   smagorinsky_cs2;
 } FL_Material;
 
 typedef struct FL_State {
