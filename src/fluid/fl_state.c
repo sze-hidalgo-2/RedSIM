@@ -94,7 +94,7 @@ force_inline function void fl_state_set(FL_State *fl, U64 at, V5F state) {
   fl->energy  [at] = state.x5;
 }
 
-function F32 fl_state_get_pressure(FL_State *fl, U64 at) {
+force_inline function F32 fl_state_get_pressure(FL_State *fl, U64 at) {
   F32 rho            = fl->rho[at];
   V3F rho_v          = v3f(fl->rho_v1[at], fl->rho_v2[at], fl->rho_v3[at]);
   F32 energy         = fl->energy[at];
@@ -104,7 +104,7 @@ function F32 fl_state_get_pressure(FL_State *fl, U64 at) {
   return pressure;
 }
 
-function void fl_state_set_pressure(FL_State *fl, F32 pressure, U64 at) {
+force_inline function void fl_state_set_pressure(FL_State *fl, F32 pressure, U64 at) {
   F32 rho            = fl->rho[at];
   V3F rho_v          = v3f(fl->rho_v1[at], fl->rho_v2[at], fl->rho_v3[at]);
   F32 kinetic_energy = v3f_len2(rho_v) / (2.f * rho);
@@ -112,14 +112,14 @@ function void fl_state_set_pressure(FL_State *fl, F32 pressure, U64 at) {
   fl->energy[at]     = pressure / (fl->material.gamma - 1.f) + kinetic_energy;
 }
 
-function F32 fl_state_energy_from_pressure(FL_State *fl, F32 density, V3F momentum, F32 pressure) {
+force_inline function F32 fl_state_energy_from_pressure(FL_State *fl, F32 density, V3F momentum, F32 pressure) {
   F32 kinetic_energy  = v3f_len2(momentum) / (2.f * density);
   F32 energy          = pressure / (fl->material.gamma - 1.f) + kinetic_energy;
 
   return energy;
 }
 
-function F32 fl_state_get_temperature(FL_State *fl, U64 at) {
+force_inline function F32 fl_state_get_temperature(FL_State *fl, U64 at) {
   F32 rho            = fl->rho[at];
   F32 pressure       = fl_state_get_pressure(fl, at);
   F32 temperature    = pressure / (rho * fl->material.gas_constant);
@@ -127,7 +127,7 @@ function F32 fl_state_get_temperature(FL_State *fl, U64 at) {
   return temperature;
 }
 
-function F32 fl_gradient_q_criterion(FL_Gradient_State *grad, U32 at) {
+force_inline function F32 fl_gradient_q_criterion(FL_Gradient_State *grad, U32 at) {
   // NOTE(cmat): To compute the Q-criterion, we split the velocity gradient tensor
   // - into a symmetric and assymetric part.
 

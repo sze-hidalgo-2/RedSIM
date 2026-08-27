@@ -9,6 +9,15 @@ typedef struct FL_Solver_Euler {
   FL_Limiter_State    limiter;
   FL_State            residual;
 
+  // NOTE(cmat): Primitive variable storage.
+  // - These come up everywhere in computations, 
+  // - so we compute them in a single pass then refer to them.
+  // - These are stored for halos and ghosts.
+  F32                *primitive_v_x;
+  F32                *primitive_v_y;
+  F32                *primitive_v_z;
+  F32                *primitive_pressure;
+
   // NOTE(cmat): Time-Step for each cell.
   F64                *cell_time_step;
   F64                *lane_time_step;

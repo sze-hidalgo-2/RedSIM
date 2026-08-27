@@ -553,6 +553,8 @@ function void ug_mesh_compute_cells_gradient(UG_Mesh *mesh, Arena *arena) {
       A_yy += weight * dx.y * dx.y;
       A_yz += weight * dx.y * dx.z;
       A_zz += weight * dx.z * dx.z;
+
+      grad->weight_dx[it_face] = v3f_mul(weight, dx);
     }
 
     F32 determinant = + A_xx * (A_yy * A_zz - A_yz * A_yz)

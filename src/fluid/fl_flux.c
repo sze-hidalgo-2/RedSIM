@@ -139,7 +139,7 @@ force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive
   // NOTE(cmat): We filter width from local cell volume.
   F32 rho_face   = .5f * (left_primitive.x1 + right_primitive.x1);
   F32 volume_avg = .5f * (left_volume + right_volume);
-  F32 delta      = powf(volume_avg, 1.f / 3.f);
+  F32 delta      = cbrtf(volume_avg);
   F32 mu_sgs     = rho_face * (material->smagorinsky_cs * material->smagorinsky_cs) * (delta * delta) * S_mag;
 
   F32 mu_eff = material->viscosity_mu + mu_sgs;

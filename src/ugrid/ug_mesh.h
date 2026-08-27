@@ -31,6 +31,8 @@ typedef struct UG_Cell_Gradient {
   F32 inv_A_yy;
   F32 inv_A_yz;
   F32 inv_A_zz;
+
+  V3F weight_dx[4];
 } UG_Cell_Gradient;
 
 typedef struct UG_Cells {
