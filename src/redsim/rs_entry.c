@@ -93,7 +93,11 @@ function void redsim_group_entry(void *user_data) {
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
+#if 0
   F32 wind_angle = f32_pi / 4.f;
+#else
+  F32 wind_angle = 0.f;
+#endif
 
   FL_Boundary_Farfield farfield = {
     .density  = 1.225f,
@@ -147,9 +151,14 @@ function void redsim_group_entry(void *user_data) {
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
+#if 0
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
+#else
+    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
+#endif
   }
 
   // NOTE(cmat): Init solver.
@@ -168,14 +177,14 @@ function void redsim_group_entry(void *user_data) {
 
   // NOTE(cmat): Export results.
   FLF_Ensight_Export export = { };
-  flf_ensight_export_init(&export, str08_lit("sod"), &mesh, &permanent_arena);
+  flf_ensight_export_init(&export, str08_lit("karman"), &mesh, &permanent_arena);
 
   // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
   fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
   flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step);
 
   F32 time = 0;
-  for Iter_Index(it, 500) {
+  for Iter_Index(it, 100) {
   // for Iter_Index(it, 1) {
     F32 time_step = fl_solver_euler_solve(&solver, 0.f);
     time += fl_scale_denormalize_time(&ref_scale, time_step);
