@@ -187,7 +187,7 @@ function void redsim_group_entry(void *user_data) {
   flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step);
 
   F32 time = 0;
-  for Iter_Index(it, 100) {
+  for Iter_Index(it, 500) {
   // for Iter_Index(it, 1) {
     F32 time_step = fl_solver_euler_solve(&solver, 0.f);
     time += fl_scale_denormalize_time(&ref_scale, time_step);
