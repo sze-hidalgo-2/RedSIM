@@ -36,6 +36,9 @@ typedef struct FL_Solver_Euler {
   F32                *halo_gradient_limiter_receive_dat;
   U64                 halo_gradient_limiter_send_len;
   F32                *halo_gradient_limiter_send_dat;
+
+  // TODO(cmat): Temporary.
+  V3F                 gravity;
 } FL_Solver_Euler;
 
 typedef U32 Time_Step_Mode;

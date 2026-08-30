@@ -134,7 +134,7 @@ function void fl_solver_euler_halo_gradient_limiter_build_request_list(FL_Solver
   profiler_end_function();
 }
 
-function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boundary, FL_Material material, UG_Mesh *mesh, Arena *arena) {
+function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boundary, FL_Material material, V3F gravity, UG_Mesh *mesh, Arena *arena) {
   Zero_Fill(euler);
 
   euler->mesh                 = mesh;
@@ -175,7 +175,6 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
   lane_broadcast_ptr(&euler->primitive_v_y,      0);
   lane_broadcast_ptr(&euler->primitive_v_z,      0);
 
-
   lane_broadcast_ptr(&euler->cell_time_step,              0);
   lane_broadcast_ptr(&euler->lane_time_step,              0);
   lane_broadcast_ptr(&euler->lane_state_norm2,            0);
@@ -187,6 +186,9 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
   // NOTE(cmat): Build request list for halo synchronization.
   fl_solver_euler_halo_state_build_request_list             (euler);
   fl_solver_euler_halo_gradient_limiter_build_request_list  (euler);
+
+  // TODO(cmat): Temporary.
+  euler->gravity = gravity;
 }
 
 function void fl_solver_compute_ghost(FL_Solver_Euler *euler, FL_State *state) {
@@ -333,11 +335,21 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
     F32 volume     = mesh->cells.volume[it_cell];
     F32 volume_rcp = 1.f / volume;
 
-    residual->rho     [it_cell] = cell_residual.x1 * volume_rcp;
-    residual->rho_v1  [it_cell] = cell_residual.x2 * volume_rcp;
-    residual->rho_v2  [it_cell] = cell_residual.x3 * volume_rcp;
-    residual->rho_v3  [it_cell] = cell_residual.x4 * volume_rcp;
-    residual->energy  [it_cell] = cell_residual.x5 * volume_rcp;
+    // NOTE(cmat): Gravity source term.
+    // TODO(cmat): Temporary.
+    V5F source_term = {
+      .x1 = 0,
+      .x2 = state->rho[it_cell] * euler->gravity.x,
+      .x3 = state->rho[it_cell] * euler->gravity.y,
+      .x4 = state->rho[it_cell] * euler->gravity.z,
+      .x5 = state->rho[it_cell] * v3f_dot(left_primitive.x234, euler->gravity),
+    };
+
+    residual->rho     [it_cell] = cell_residual.x1 * volume_rcp + source_term.x1;
+    residual->rho_v1  [it_cell] = cell_residual.x2 * volume_rcp + source_term.x2;
+    residual->rho_v2  [it_cell] = cell_residual.x3 * volume_rcp + source_term.x3;
+    residual->rho_v3  [it_cell] = cell_residual.x4 * volume_rcp + source_term.x4;
+    residual->energy  [it_cell] = cell_residual.x5 * volume_rcp + source_term.x5;
 
     if (compute_time_step) {
       cell_time_step[it_cell] = (F64)volume / (spectral_inviscid_sum + spectral_viscous_sum);

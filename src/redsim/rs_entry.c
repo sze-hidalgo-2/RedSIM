@@ -93,15 +93,15 @@ function void redsim_group_entry(void *user_data) {
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
-#if 0
-  F32 wind_angle = f32_pi / 4.f;
+#if 1
+  F32 wind_angle = f32_pi / 4.f + f32_pi;
 #else
   F32 wind_angle = 0.f;
 #endif
 
   FL_Boundary_Farfield farfield = {
     .density  = 1.225f,
-    .velocity = v3f_mul(40.f, v3f(f32_cos(wind_angle), f32_sin(wind_angle), 0)),
+    .velocity = v3f_mul(5.f, v3f(f32_cos(wind_angle), f32_sin(wind_angle), 0)),
     .pressure = 101325.f,
   };
 
@@ -151,7 +151,7 @@ function void redsim_group_entry(void *user_data) {
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
-#if 0
+#if 1
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
@@ -164,8 +164,11 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Init solver.
   lane_barrier();
 
+  V3F gravity = v3f(0, 0, -9.81f);
+  gravity     = v3f_mul(ref_scale.length / ref_scale.sound_speed * ref_scale.sound_speed, gravity);
+
   log_info("Initializing solver");
-  fl_solver_euler_init(&solver, &boundary, material, &mesh, &permanent_arena);
+  fl_solver_euler_init(&solver, &boundary, material, gravity, &mesh, &permanent_arena);
 
   // NOTE(cmat): Initial condition.
   lane_barrier();
