@@ -165,7 +165,7 @@ function void redsim_group_entry(void *user_data) {
   lane_barrier();
 
   V3F gravity = v3f(0, 0, -9.81f);
-  gravity     = v3f_mul(ref_scale.length / ref_scale.sound_speed * ref_scale.sound_speed, gravity);
+  gravity     = v3f_mul(ref_scale.length / (ref_scale.sound_speed * ref_scale.sound_speed), gravity);
 
   log_info("Initializing solver");
   fl_solver_euler_init(&solver, &boundary, material, gravity, &mesh, &permanent_arena);
