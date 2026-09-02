@@ -4,6 +4,7 @@ enum {
   FL_Boundary_Type_No_Slip,
   FL_Boundary_Type_Farfield,
   FL_Boundary_Type_Atmospheric,
+  FL_Boundary_Type_Radiation_Wall,
 };
 
 typedef struct FL_Boundary_Farfield {
@@ -24,10 +25,23 @@ typedef struct FL_Boundary_Atmospheric {
   F32 wind_u_ref;
 } FL_Boundary_Atmospheric;
 
+typedef struct FL_Boundary_Radiation_Wall {
+  F32 solar_irradiance;
+  F32 gamma_coeff;
+  F32 albedo;
+  F32 sky_view_factor;
+  F32 diffuse_fraction;
+  F32 cos_zenith;
+  F32 thermal_conductivity;
+  F32 temperature_min;
+  F32 temperature_max;
+} FL_Boundary_Radiation_Wall;
+
 typedef struct FL_Boundary {
-  FL_Boundary_Type        type;
-  FL_Boundary_Farfield    farfield;
-  FL_Boundary_Atmospheric atmospheric;
+  FL_Boundary_Type            type;
+  FL_Boundary_Farfield        farfield;
+  FL_Boundary_Atmospheric     atmospheric;
+  FL_Boundary_Radiation_Wall  radiation_wall;
 } FL_Boundary;
 
 typedef struct FL_Boundary_Map {

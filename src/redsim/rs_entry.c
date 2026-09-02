@@ -114,6 +114,18 @@ function void redsim_group_entry(void *user_data) {
     .wind_u_ref         = 4.f,
   };
 
+  FL_Boundary_Radiation_Wall wall = {
+    .solar_irradiance     = 800.f,
+    .gamma_coeff          = 0.35f,
+    .albedo               = 0.20f,
+    .sky_view_factor      = 0.4f,
+    .diffuse_fraction     = 0.15f,
+    .cos_zenith           = 0.917f,
+    .thermal_conductivity = 0.026f,
+    .temperature_min      = 200.f,
+    .temperature_max      = 450.f,
+  };
+
 #endif
 
   FL_Material material = {};
@@ -166,14 +178,12 @@ function void redsim_group_entry(void *user_data) {
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
 #if 1
-    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
-    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
-    // *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
+    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric, .atmospheric = atm };
 #else
-    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
-    //*fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
-    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric, .atmospheric = atm };
+    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric = atm };
 #endif
   }
 

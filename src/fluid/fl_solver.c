@@ -956,8 +956,8 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
     iteration    += 1;
 
 #if 1
-    if (!residual_norm_init || it == 9999) {
-    // if (1) {
+    // if (!residual_norm_init || it == 9999) {
+    if (1) {
 
       // NOTE(cmat): Compute current residual.
       fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 0);

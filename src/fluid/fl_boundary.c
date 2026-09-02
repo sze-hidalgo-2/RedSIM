@@ -31,6 +31,13 @@ force_inline function V3F fl_boundary_atmosphere_velocity(F32 z, FL_Boundary_Atm
   return result;
 }
 
+force_inline function F32 fl_boundary_radiation_heat_flux(FL_Boundary_Radiation_Wall *rad) {
+  F32 I_diff = rad->diffuse_fraction * rad->solar_irradiance;
+  F32 I_dir  = (rad->solar_irradiance - I_diff * rad->sky_view_factor) / rad->cos_zenith;
+  F32 q_bc   = rad->gamma_coeff * (1.f - rad->albedo) * (I_dir * rad->cos_zenith + I_diff * rad->sky_view_factor);
+  return q_bc;
+}
+
 // ------------------------------------------------------------
 // #-- Boundary Condition Handling
 
@@ -122,6 +129,34 @@ force_inline function V5F fl_boundary_map_ghost(FL_Boundary_Map *bmap, U32 marke
       result.x3 = rho * ghost_velocity.y;
       result.x4 = rho * ghost_velocity.z;
       result.x5 = fl_state_energy_from_pressure(mat, result.x1, result.x234, ghost_pressure);
+    } break;
+
+    case FL_Boundary_Type_Radiation_Wall: {
+      V3F velocity       = v3f_div(v3f(rho_v1, rho_v2, rho_v3), rho);
+      F32 v2_inner       = v3f_len2(velocity);
+      F32 P_inner_nd     = (mat->gamma - 1.f) * (energy - 0.5f * rho * v2_inner);
+
+      F32 P_inner        = fl_scale_denormalize_pressure(scale, P_inner_nd);
+      F32 rho_inner_dim  = fl_scale_denormalize_density(scale, rho);
+      F32 T_inner        = P_inner / (rho_inner_dim * mat->gas_constant_R);
+
+      F32 q_wall         = fl_boundary_radiation_heat_flux(&boundary->radiation_wall);
+      F32 dn             = f32_sqrt(v3f_len2(v3f_sub(ghost_center, inner_center))) * scale->length;
+      F32 T_ghost        = T_inner + (q_wall * dn) / boundary->radiation_wall.thermal_conductivity;
+      T_ghost            = f32_max(boundary->radiation_wall.temperature_min, f32_min(boundary->radiation_wall.temperature_max, T_ghost));
+
+      F32 P_ghost        = P_inner + rho_inner_dim * v3f_dot(gravity, v3f_sub(ghost_center, inner_center)) * scale->length;
+      F32 rho_ghost_dim  = P_ghost / (mat->gas_constant_R * T_ghost);
+
+      F32 rho_ghost      = fl_scale_normalize_density  (scale, rho_ghost_dim);
+      F32 P_ghost_nd     = fl_scale_normalize_pressure (scale, P_ghost);
+      V3F ghost_velocity = v3f_mul(-1.f, velocity);
+
+      result.x1          = rho_ghost;
+      result.x2          = rho_ghost * ghost_velocity.x;
+      result.x3          = rho_ghost * ghost_velocity.y;
+      result.x4          = rho_ghost * ghost_velocity.z;
+      result.x5          = fl_state_energy_from_pressure(mat, result.x1, result.x234, P_ghost_nd);
     } break;
 
     // NOTE(cmat): Riemann-invariant farfield.
