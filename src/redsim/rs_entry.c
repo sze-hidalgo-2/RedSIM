@@ -165,7 +165,7 @@ function void redsim_group_entry(void *user_data) {
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
-#if 0
+#if 1
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
     // *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
