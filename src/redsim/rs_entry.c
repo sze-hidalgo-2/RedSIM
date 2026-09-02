@@ -122,8 +122,8 @@ function void redsim_group_entry(void *user_data) {
     .diffuse_fraction     = 0.15f,
     .cos_zenith           = 0.917f,
     .thermal_conductivity = 0.026f,
-    .temperature_min      = 200.f,
-    .temperature_max      = 450.f,
+    .temperature_min      = 260.f,          // was 200 — tighter backstop now that T_ghost is decoupled from the solution
+    .temperature_max      = 320.f,          // was 450
   };
 
 #endif
@@ -177,13 +177,14 @@ function void redsim_group_entry(void *user_data) {
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
-#if 1
+#if 0
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric, .atmospheric = atm };
 #else
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
-    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric = atm };
+    // *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm };
 #endif
   }
 

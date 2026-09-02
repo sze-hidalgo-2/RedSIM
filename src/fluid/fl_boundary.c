@@ -38,6 +38,38 @@ force_inline function F32 fl_boundary_radiation_heat_flux(FL_Boundary_Radiation_
   return q_bc;
 }
 
+// NOTE(cmat): Mesh-independent radiative-convective equilibrium wall temperature.
+// - Solves q_solar = h_conv * (T_wall - T_air) + sigma * eps * (T_wall^4 - T_air^4)
+//   for T_wall, using a local linearization of the radiative loss term around T_air
+//   so we get a closed-form solution instead of an iterative one. This replaces the
+//   old dn-based conduction estimate, which depended on local mesh cell size near
+//   the wall (dn = distance from cell center to ghost center) and therefore gave
+//   different wall temperatures purely from mesh resolution changes, not physics.
+// - h_conv uses a simple bulk forced-convection estimate; C_H (~0.002-0.005) is a
+//   typical near-surface heat-transfer coefficient for atmospheric boundary layers.
+// - Reuses rad->gamma_coeff as effective longwave emissivity (0-1), since it's
+//   already a dimensionless absorption/efficiency-style coefficient on the struct.
+force_inline function F32 fl_boundary_radiation_wall_equilibrium_temperature(
+    FL_Boundary_Radiation_Wall *rad, F32 T_air, F32 rho_air, F32 wind_speed, FL_Material *mat) {
+  F32 q_solar = fl_boundary_radiation_heat_flux(rad); // W/m^2
+
+  // NOTE(cmat): mat->cp is the solver's internal *non-dimensional* specific heat
+  // (1/(gamma-1)) used in normalized flux/EOS math — NOT a physical J/(kg*K)
+  // value. For this dimensional heat-balance calc we need the real cp, computed
+  // from gas_constant_R (which is always physical/unscaled, unlike gas_constant).
+  F32 cp_dim = mat->gas_constant_R * mat->gamma / (mat->gamma - 1.f); // J/(kg*K)
+
+  F32 C_H     = 0.003f;
+  F32 h_conv  = rho_air * cp_dim * C_H * f32_max(wind_speed, 0.5f); // W/(m^2*K)
+
+  F32 stefan_boltzmann = 5.670374e-8f;
+  F32 emissivity       = rad->gamma_coeff;
+  F32 h_rad = 4.f * stefan_boltzmann * emissivity * T_air * T_air * T_air;
+
+  F32 T_wall = T_air + q_solar / (h_conv + h_rad);
+  return T_wall;
+}
+
 // ------------------------------------------------------------
 // #-- Boundary Condition Handling
 
@@ -135,19 +167,18 @@ force_inline function V5F fl_boundary_map_ghost(FL_Boundary_Map *bmap, U32 marke
       V3F velocity       = v3f_div(v3f(rho_v1, rho_v2, rho_v3), rho);
       F32 v2_inner       = v3f_len2(velocity);
       F32 P_inner_nd     = (mat->gamma - 1.f) * (energy - 0.5f * rho * v2_inner);
-
       F32 P_inner        = fl_scale_denormalize_pressure(scale, P_inner_nd);
       F32 rho_inner_dim  = fl_scale_denormalize_density(scale, rho);
       F32 T_inner        = P_inner / (rho_inner_dim * mat->gas_constant_R);
 
-      F32 q_wall         = fl_boundary_radiation_heat_flux(&boundary->radiation_wall);
-      F32 dn             = f32_sqrt(v3f_len2(v3f_sub(ghost_center, inner_center))) * scale->length;
-      F32 T_ghost        = T_inner + (q_wall * dn) / boundary->radiation_wall.thermal_conductivity;
+      F32 wind_speed_dim = fl_scale_denormalize_velocity(scale, f32_sqrt(v2_inner));
+      F32 T_ghost        = fl_boundary_radiation_wall_equilibrium_temperature(&boundary->radiation_wall, T_inner, rho_inner_dim, wind_speed_dim, mat);
       T_ghost            = f32_max(boundary->radiation_wall.temperature_min, f32_min(boundary->radiation_wall.temperature_max, T_ghost));
 
-      F32 P_ghost        = P_inner + rho_inner_dim * v3f_dot(gravity, v3f_sub(ghost_center, inner_center)) * scale->length;
+      V3F delta_pos      = v3f_sub(ghost_center, inner_center);
+      V3F gravity_dim    = v3f_mul((scale->sound_speed * scale->sound_speed) / scale->length, gravity);
+      F32 P_ghost        = P_inner + rho_inner_dim * v3f_dot(gravity_dim, delta_pos) * scale->length;
       F32 rho_ghost_dim  = P_ghost / (mat->gas_constant_R * T_ghost);
-
       F32 rho_ghost      = fl_scale_normalize_density  (scale, rho_ghost_dim);
       F32 P_ghost_nd     = fl_scale_normalize_pressure (scale, P_ghost);
       V3F ghost_velocity = v3f_mul(-1.f, velocity);
