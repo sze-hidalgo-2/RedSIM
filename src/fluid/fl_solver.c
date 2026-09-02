@@ -134,11 +134,12 @@ function void fl_solver_euler_halo_gradient_limiter_build_request_list(FL_Solver
   profiler_end_function();
 }
 
-function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boundary, FL_Material material, V3F gravity, UG_Mesh *mesh, Arena *arena) {
+function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boundary, FL_Scale scale, FL_Material material, V3F gravity, UG_Mesh *mesh, Arena *arena) {
   Zero_Fill(euler);
 
   euler->mesh                 = mesh;
   euler->boundary             = boundary;
+  euler->scale                = scale;
 
   fl_state_init(&euler->flow_1,   material, mesh, 1, arena);
   fl_state_init(&euler->flow_2,   material, mesh, 1, arena);
@@ -202,10 +203,13 @@ function void fl_solver_compute_ghost(FL_Solver_Euler *euler, FL_State *state) {
     U32 marker_index      = mesh->ghosts.marker_index [it];
     U64 flow_ghost_index  = mesh->cells.len + mesh->halos.len + it;
 
+    V3F inner_center      = mesh->cells.center[cell_parent_index];
+    V3F ghost_center      = mesh->cells.center[flow_ghost_index];
+
     UG_Cell_Faces *faces  = &mesh->cells.faces[cell_parent_index];
     V3F normal            = v3f(faces->normal_x[face_parent_index], faces->normal_y[face_parent_index], faces->normal_z[face_parent_index]);
     V5F inner_state       = fl_state_get(state, cell_parent_index);
-    V5F ghost_state       = fl_boundary_map_ghost(euler->boundary, marker_index, inner_state, normal, state->material.gamma);
+    V5F ghost_state       = fl_boundary_map_ghost(euler->boundary, marker_index, inner_state, inner_center, ghost_center, normal, &euler->scale, &state->material, euler->gravity);
 
     fl_state_set(state, flow_ghost_index, ghost_state);
   }
@@ -282,7 +286,7 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
 
       // NOTE(cmat): Convert left primitive state to conservative state.
       V3F left_momentum = v3f_mul(left_face_primitive[0], v3f(left_face_primitive[1], left_face_primitive[2], left_face_primitive[3]));
-      V5F left_state    = v5f(left_face_primitive[0], left_momentum.x, left_momentum.y, left_momentum.z, fl_state_energy_from_pressure(state, left_face_primitive[0], left_momentum, left_face_primitive[4]));
+      V5F left_state    = v5f(left_face_primitive[0], left_momentum.x, left_momentum.y, left_momentum.z, fl_state_energy_from_pressure(&state->material, left_face_primitive[0], left_momentum, left_face_primitive[4]));
 
       V5F right_primitive = {
         .x1 = state->rho[adjacent],
@@ -312,7 +316,7 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
 
         // NOTE(cmat): Convert right primitive state to conservative state.
         V3F right_momentum  = v3f_mul(right_face_primitive[0], v3f(right_face_primitive[1], right_face_primitive[2], right_face_primitive[3]));
-        right_state         = v5f(right_face_primitive[0], right_momentum.x, right_momentum.y, right_momentum.z, fl_state_energy_from_pressure(state, right_face_primitive[0], right_momentum, right_face_primitive[4]));
+        right_state         = v5f(right_face_primitive[0], right_momentum.x, right_momentum.y, right_momentum.z, fl_state_energy_from_pressure(&state->material, right_face_primitive[0], right_momentum, right_face_primitive[4]));
 
       // NOTE(cmat): If the right cell is a ghost state, it has a gradient zero. We fallback to first order.
       } else {
@@ -952,8 +956,8 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
     iteration    += 1;
 
 #if 1
-    if (!residual_norm_init || it == 9999) {
-    // if (1) {
+    // if (!residual_norm_init || it == 9999) {
+    if (1) {
 
       // NOTE(cmat): Compute current residual.
       fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 0);

@@ -1,6 +1,7 @@
 typedef struct FL_Solver_Euler {
   UG_Mesh            *mesh;
   FL_Boundary_Map    *boundary;
+  FL_Scale            scale;
 
   FL_State            flow_1;
   FL_State            flow_2;

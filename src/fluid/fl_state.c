@@ -112,9 +112,9 @@ force_inline function void fl_state_set_pressure(FL_State *fl, F32 pressure, U64
   fl->energy[at]     = pressure / (fl->material.gamma - 1.f) + kinetic_energy;
 }
 
-force_inline function F32 fl_state_energy_from_pressure(FL_State *fl, F32 density, V3F momentum, F32 pressure) {
+force_inline function F32 fl_state_energy_from_pressure(FL_Material *mat, F32 density, V3F momentum, F32 pressure) {
   F32 kinetic_energy  = v3f_len2(momentum) / (2.f * density);
-  F32 energy          = pressure / (fl->material.gamma - 1.f) + kinetic_energy;
+  F32 energy          = pressure / (mat->gamma - 1.f) + kinetic_energy;
 
   return energy;
 }
@@ -175,9 +175,35 @@ function void fl_state_set_inner_from_farfield(FL_State *fl, FL_Boundary_Farfiel
   lane_barrier();
 }
 
-function void fl_material_init(FL_Material *material, F32 gamma, F32 viscosity, F32 prandtl_number) {
+function void fl_state_set_inner_from_atmospheric(FL_State *fl, UG_Mesh *mesh, FL_Scale *scale, FL_Material *mat, FL_Boundary_Atmospheric *atm) {
+  for Iter_Range(it, lane_range(fl->inner_len)) {
+    V3F center     = mesh->cells.center[it];
+    F32 z          = (center.z * scale->length) + scale->offset.z;
+
+    F32 pressure   = fl_boundary_atmosphere_pressure (z, atm, mat->gas_constant_R);
+    F32 density    = fl_boundary_atmosphere_density  (z, atm, mat->gas_constant_R);
+    V3F velocity   = fl_boundary_atmosphere_velocity (z, atm);
+
+    pressure       = fl_scale_normalize_pressure (scale, pressure);
+    density        = fl_scale_normalize_density  (scale, density);
+    velocity       = fl_scale_normalize_velocity (scale, velocity);
+
+    fl->rho[it]    = density;
+    fl->rho_v1[it] = density * velocity.x;
+    fl->rho_v2[it] = density * velocity.y;
+    fl->rho_v3[it] = density * velocity.z;
+
+    fl_state_set_pressure(fl, pressure, it);
+  }
+
+  lane_barrier();
+}
+
+
+function void fl_material_init(FL_Material *material, F32 gamma, F32 viscosity, F32 prandtl_number, F32 gas_constant_R) {
   material->gamma                = gamma;
   material->gas_constant         = 1.f / gamma;
+  material->gas_constant_R       = gas_constant_R;
   material->viscosity_mu         = viscosity;
   material->prandtl_number       = prandtl_number;
   material->thermal_conductivity = viscosity / ((gamma - 1.f) * prandtl_number);
@@ -194,6 +220,7 @@ function void fl_scale_init(FL_Scale *scale, UG_Mesh *mesh, F32 density, F32 pre
   Zero_Fill(scale);
 
   scale->length       = mesh->grid.scale;
+  scale->offset       = mesh->grid.offset;
   scale->density      = density;
   scale->pressure     = pressure;
   scale->sound_speed  = f32_sqrt((gamma * scale->pressure) / scale->density);
@@ -209,11 +236,27 @@ function void fl_scale_normalize_material(FL_Scale *scale, FL_Material *material
   F32 gamma            = material->gamma;
   F32 viscosity_scaled = material->viscosity_mu / (scale->density * scale->sound_speed * scale->length);
   F32 prandtl_number   = material->prandtl_number;
-  fl_material_init(material, gamma, viscosity_scaled, prandtl_number);
+  F32 gas_constant_R   = material->gas_constant_R;
+  fl_material_init(material, gamma, viscosity_scaled, prandtl_number, gas_constant_R);
 }
 
 function F32 fl_scale_normalize_time(FL_Scale *scale, F32 time) {
   F32 result = time * (scale->sound_speed / scale->length);
+  return result;
+}
+
+function F32 fl_scale_normalize_density(FL_Scale *scale, F32 density) {
+  F32 result = density / scale->density;
+  return result;
+}
+
+function V3F fl_scale_normalize_velocity(FL_Scale *scale, V3F velocity) {
+  V3F result = v3f_div(velocity, scale->sound_speed);
+  return result;
+}
+
+function F32 fl_scale_normalize_pressure(FL_Scale *scale, F32 pressure) {
+  F32 result = pressure / (scale->density * scale->sound_speed * scale->sound_speed);
   return result;
 }
 

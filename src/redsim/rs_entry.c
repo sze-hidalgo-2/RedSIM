@@ -93,26 +93,38 @@ function void redsim_group_entry(void *user_data) {
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
-#if 1
   F32 wind_angle = f32_pi / 4.f + f32_pi;
-#else
-  F32 wind_angle = 0.f;
-#endif
 
+#if 0
   FL_Boundary_Farfield farfield = {
     .density  = 1.225f,
     .velocity = v3f_mul(5.f, v3f(f32_cos(wind_angle), f32_sin(wind_angle), 0)),
     .pressure = 101325.f,
   };
+#else
+  FL_Boundary_Atmospheric atm = {
+    .temperature_ground = 288.15f,
+    .pressure_ground    = 101325.f,
+    .gravity            = 9.81f,
+    .lapse_rate         = 0.0065f,
+    .wind_angle         = f32_pi + f32_pi / 4.f,
+    .wind_d             = 0.f,
+    .wind_z0            = 0.03f,
+    .wind_z_ref         = 10.f,
+    .wind_u_ref         = 4.f,
+  };
+
+#endif
 
   FL_Material material = {};
-  fl_material_init(&material, 1.4f, 1.81e-5f, 0.71f);
+  fl_material_init(&material, 1.4f, 1.81e-5f, 0.71f, 287.05f);
 
-  FL_Boundary_Farfield farfield_old = farfield;
+  // FL_Boundary_Farfield farfield_old = farfield;
   FL_Material          material_old = material;
 
   FL_Scale ref_scale = {};
-  fl_scale_init(&ref_scale, &mesh, farfield.density, farfield.pressure, 1.4f);
+  // fl_scale_init(&ref_scale, &mesh, farfield.density, farfield.pressure, 1.4f);
+  fl_scale_init(&ref_scale, &mesh, 1.2f, atm.pressure_ground, material.gamma);
 
   // NOTE(cmat): Normalize all simulated quantities.
   log_info("Normalizing Qualtities");
@@ -124,9 +136,10 @@ function void redsim_group_entry(void *user_data) {
     log_info("sound speed: %10.2e", ref_scale.sound_speed);
   }
 
-  fl_scale_normalize_farfield(&ref_scale, &farfield);
+  // fl_scale_normalize_farfield(&ref_scale, &farfield);
   fl_scale_normalize_material(&ref_scale, &material);
 
+#if 0
   Log_Zone_Scope("Farfield Boundary") {
     log_info("density:     %10.2e -> %10.2e",               farfield_old.density, farfield.density);
     log_info("velocity x:  %10.2e -> %10.2e",               farfield_old.velocity.x, farfield.velocity.x);
@@ -134,6 +147,7 @@ function void redsim_group_entry(void *user_data) {
     log_info("velocity z:  %10.2e -> %10.2e",               farfield_old.velocity.z, farfield.velocity.z);
     log_info("pressure:    %10.2e -> %10.2e",               farfield_old.pressure, farfield.pressure);
   }
+#endif
 
   Log_Zone_Scope("Material") {
     log_info("gamma:                %10.2e -> %10.2e" , material_old.gamma                , material.gamma);
@@ -151,29 +165,33 @@ function void redsim_group_entry(void *user_data) {
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 6);
   if (lane_index() == 0) {
-#if 1
+#if 0
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
-    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
+    // *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
+    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric, .atmospheric = atm };
 #else
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
-    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
+    //*fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Farfield, .farfield = farfield };
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric, .atmospheric = atm };
 #endif
   }
 
   // NOTE(cmat): Init solver.
   lane_barrier();
 
-  V3F gravity = v3f(0, 0, -9.81f);
+  V3F gravity = v3f(0, 0, -atm.gravity);
   gravity     = v3f_mul(ref_scale.length / (ref_scale.sound_speed * ref_scale.sound_speed), gravity);
 
   log_info("Initializing solver");
-  fl_solver_euler_init(&solver, &boundary, material, gravity, &mesh, &permanent_arena);
+  fl_solver_euler_init(&solver, &boundary, ref_scale, material, gravity, &mesh, &permanent_arena);
 
   // NOTE(cmat): Initial condition.
   lane_barrier();
   log_info("Initializing flow with farfield");
-  fl_state_set_inner_from_farfield(&solver.flow_1, &farfield);
+
+  // fl_state_set_inner_from_farfield(&solver.flow_1, &farfield);
+  fl_state_set_inner_from_atmospheric(&solver.flow_1, &mesh, &ref_scale, &material, &atm);
 
   // NOTE(cmat): Iterate and solve.
   lane_barrier();
