@@ -85,11 +85,21 @@ else
 fi
 
 if [[ -n ${fast_math-} ]]; then
-echo "fast_math: yes"
-compiler_flags+=" -ffast-math"
-compiler_flags+=" -Wno-nan-infinity-disabled"
+  echo "fast_math: yes"
+  compiler_flags+=" -ffast-math"
+  compiler_flags+=" -Wno-nan-infinity-disabled"
 else
   echo "fast_math: no"
+fi
+
+if [[ -n ${no_mpi-} ]]; then
+  echo "mpi: no"
+  compiler_exec="clang"
+  define_flags+=" -DBUILD_IPC_MPI=0"
+else
+  echo "mpi: yes"
+  compiler_exec="mpicc"
+  define_flags+=" -DBUILD_IPC_MPI=1"
 fi
 
 compiler_flags+=" -DBUILD_HASH=$(git rev-parse --short HEAD)"

@@ -285,6 +285,11 @@ function F32 fl_scale_denormalize_temperature(FL_Scale *scale, F32 temperature) 
   return result;
 }
 
+function F32 fl_scale_denormalize_temperature_kelvin(FL_Scale *scale, FL_Material *mat, F32 temperature) {
+  F32 result = (temperature * scale->pressure / scale->density) / mat->gas_constant_R;
+  return result;
+}
+
 function F32 fl_scale_denormalize_q_criterion(FL_Scale *scale, F32 q) {
   F32 result = q * (scale->sound_speed / scale->length) * (scale->sound_speed / scale->length);
   return result;

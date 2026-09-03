@@ -79,11 +79,11 @@ function void ug_mesh_normalize_grid_scale(UG_Mesh *mesh, UG_Grid *grid) {
   lane_barrier();
 
   // NOTE(cmat): Broadcast bounds.
-  mesh->bounds = bounds_global[0];
-  log_info("Grid bounds: (%.2g, %.2g, %.2g), (%.2g, %.2g, %.2g)", V3_Expand(mesh->bounds.min), V3_Expand(mesh->bounds.max));
+  mesh->bounds_global = bounds_global[0];
+  log_info("Grid bounds: (%.2g, %.2g, %.2g), (%.2g, %.2g, %.2g)", V3_Expand(mesh->bounds_global.min), V3_Expand(mesh->bounds_global.max));
 
-  grid->scale = v3f_largest(v3f_sub(mesh->bounds.max, mesh->bounds.min));
-  grid->offset = mesh->bounds.min;
+  grid->scale = v3f_largest(v3f_sub(mesh->bounds_global.max, mesh->bounds_global.min));
+  grid->offset = mesh->bounds_global.min;
   log_info("Grid scale: %.2g", grid->scale);
 
   F32 scale_rcp = f32_div_safe(1.f, grid->scale);
@@ -93,6 +93,9 @@ function void ug_mesh_normalize_grid_scale(UG_Mesh *mesh, UG_Grid *grid) {
     mesh->grid.verts.y[it] = (mesh->grid.verts.y[it] - grid->offset.y) * scale_rcp;
     mesh->grid.verts.z[it] = (mesh->grid.verts.z[it] - grid->offset.z) * scale_rcp;
   }
+
+  mesh->bounds_global.min = v3f_mul(scale_rcp, v3f_sub(mesh->bounds_global.min, grid->offset));
+  mesh->bounds_global.max = v3f_mul(scale_rcp, v3f_sub(mesh->bounds_global.max, grid->offset));
 
   lane_barrier();
   log_zone_end();
@@ -699,9 +702,9 @@ function void ug_mesh_from_sub_mesh(UG_Mesh *mesh, UG_Mesh *mesh_global, UG_Part
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(arena);
   log_zone_start("Computing sub-mesh for partition %u", block_index);
-
   UG_Partition_Block *block = &partition->blocks_dat[block_index];
   mesh->cells.len           = block->cells_len;
+  mesh->bounds_global       = mesh_global->bounds_global;
 
   if (lane_index() == 0) {
     mesh->cells.faces   = arena_push_count(arena, UG_Cell_Faces,  mesh->cells.len);

@@ -322,13 +322,13 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scal
 
   // NOTE(cmat): Temperature
   for Iter_Range(it, lane_range(cell_count)) {
-    variable_buffer[it] = fl_scale_denormalize_temperature(scale, fl_state_get_temperature(state, it));
+    variable_buffer[it] = fl_scale_denormalize_temperature_kelvin(scale, &state->material, fl_state_get_temperature(state, it));
   }
   flf_ensight_export_cell_variable(export, str08_lit("temperature"), 1, variable_buffer);
 
   // NOTE(cmat): Potential Temperature (Poisson's Equation for potential temperature).
   for Iter_Range(it, lane_range(cell_count)) {
-    F32 temperature = fl_scale_denormalize_temperature(scale, fl_state_get_temperature(state, it));
+    F32 temperature = fl_scale_denormalize_temperature_kelvin(scale, &state->material, fl_state_get_temperature(state, it));
     F32 pressure    = fl_scale_denormalize_pressure(scale, fl_state_get_pressure(state, it));
     variable_buffer[it] = temperature * powf(1.0e12f / pressure, (state->material.gamma - 1.f) / state->material.gamma);
   }

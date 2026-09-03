@@ -93,8 +93,6 @@ function void redsim_group_entry(void *user_data) {
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
-  F32 wind_angle = f32_pi / 4.f + f32_pi;
-
 #if 0
   FL_Boundary_Farfield farfield = {
     .density  = 1.225f,
@@ -103,27 +101,31 @@ function void redsim_group_entry(void *user_data) {
   };
 #else
   FL_Boundary_Atmospheric atm = {
-    .temperature_ground = 288.15f,
-    .pressure_ground    = 101325.f,
+    .temperature_ground = 306.15f,  // 33 °C — typical Madrid July afternoon high
+    .pressure_ground    = 94000.f,  // ~940 hPa station pressure at Madrid's ~667 m elevation
+                                     // (NOT sea-level 101325 Pa — Madrid sits high enough that this matters)
     .gravity            = 9.81f,
-    .lapse_rate         = 0.0065f,
-    .wind_angle         = f32_pi + f32_pi / 4.f,
+    .lapse_rate         = 0.0065f,  // standard tropospheric lapse rate, fine for a shallow domain
+    .wind_angle         = f32_pi,     // domain-orientation dependent, left as-is
     .wind_d             = 0.f,
-    .wind_z0            = 0.03f,
+    .wind_z0            = 0.03f,    // open/low-vegetation terrain — bump toward 0.5-1.0 if this is a dense urban domain
     .wind_z_ref         = 10.f,
-    .wind_u_ref         = 4.f,
+    .wind_u_ref         = 4.0f,     // ~14 km/h — a light, unremarkable summer breeze
   };
-
   FL_Boundary_Radiation_Wall wall = {
-    .solar_irradiance     = 800.f,
-    .gamma_coeff          = 0.35f,
-    .albedo               = 0.20f,
-    .sky_view_factor      = 0.4f,
-    .diffuse_fraction     = 0.15f,
-    .cos_zenith           = 0.917f,
-    .thermal_conductivity = 0.026f,
-    .temperature_min      = 260.f,          // was 200 — tighter backstop now that T_ghost is decoupled from the solution
-    .temperature_max      = 320.f,          // was 450
+    .solar_irradiance     = 900.f,    // clear-sky GHI near solar noon at 40.4°N in July
+    .gamma_coeff          = 0.85f,    // concrete/stone emissivity (this field doubles as ε in h_rad,
+                                       // so it needs to be a real material emissivity, not a small
+                                       // ground-heat-flux fraction — 0.35 was too low for that role)
+    .albedo               = 0.20f,    // typical light concrete/stone urban albedo
+    .sky_view_factor      = 0.4f,     // unchanged — depends on your street-canyon/domain geometry
+    .diffuse_fraction     = 0.12f,    // slightly clearer sky than before, still physically typical
+    .cos_zenith           = 0.94f,    // zenith ≈ 19.9° = |lat 40.4° − mid-July declination ~20.5°| at solar noon
+    .thermal_conductivity = 0.026f,   // unchanged (this is air's k; currently unused by the equilibrium formula anyway)
+    .temperature_min      = 293.15f,  // ~20 °C, typical Madrid summer night low
+    .temperature_max      = 343.15f,  // ~70 °C, realistic peak for sun-exposed stone/asphalt
+    .domain_center        = v3f_mul(.5f, v3f_add(mesh.bounds_global.min, mesh.bounds_global.max)).xy,
+    .domain_radius        = v3f_mul(.5f, v3f_sub(mesh.bounds_global.max, mesh.bounds_global.min)).xy,
   };
 
 #endif
@@ -175,16 +177,16 @@ function void redsim_group_entry(void *user_data) {
 
   // NOTE(cmat): Init boundary map.
   log_info("Initializing boundary");
-  fl_boundary_map_init(&boundary, &permanent_arena, 6);
+  fl_boundary_map_init(&boundary, &permanent_arena, 3);
   if (lane_index() == 0) {
 #if 1
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
-    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric, .atmospheric = atm };
+    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm  };
 #else
-    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
-    // *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_No_Slip };
-    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm };
+    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall  };
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm   };
+    *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm   };
 #endif
   }
 

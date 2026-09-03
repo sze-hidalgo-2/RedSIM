@@ -1,3 +1,5 @@
+#if BUILD_IPC_MPI
+
 typedef struct IPC_MPI_Handle {
   MPI_Request request;
 } IPC_MPI_Handle;
@@ -311,6 +313,33 @@ function void ipc_rank_gather_all_u64(U64 value, U64 *values_all) {
   profiler_end_function();
 }
 
+
+// NOTE(cmat): No MPI.
+#else
+
+function void     ipc_init        (void)                                                                                            { }
+function void     ipc_shutdown    (void)                                                                                            { }
+function U32      ipc_rank_index                (void)                                                                              { return 0; }
+function U32      ipc_rank_count                (void)                                                                              { return 1; }
+
+function U32      ipc_rank_local_node_index     (void)                                                                              { return 0; }
+function U32      ipc_rank_local_node_count     (void)                                                                              { return 1; }
+function U32      ipc_rank_global_node_count    (void)                                                                              { return 1; }
+
+function void     ipc_rank_barrier              (void)                                                                              { lane_barrier(); }
+function void     ipc_rank_request_list_init    (IPC_Request_List *request_list)                                                    { lane_barrier(); }
+function void     ipc_rank_request_list_destroy (IPC_Request_List *request_list)                                                    { lane_barrier(); }
+function void     ipc_rank_request_list_start   (IPC_Request_List *request_list)                                                    { lane_barrier(); }
+function void     ipc_rank_request_list_wait    (IPC_Request_List *request_list)                                                    { lane_barrier(); }
+function void     ipc_rank_record_send          (IPC_Request_List *request_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag) { lane_barrier(); }
+function void     ipc_rank_record_receive       (IPC_Request_List *request_list, U64 bytes_len, void *bytes_dat, U32 rank, U32 tag) { lane_barrier(); }
+function F64      ipc_rank_minimum_f64          (F64 value)                                                                         { lane_barrier(); return value; }
+function F64      ipc_rank_sum_f64              (F64 value)                                                                         { lane_barrier(); return value; }
+function F32      ipc_rank_minimum_f32          (F32 value)                                                                         { lane_barrier(); return value; }
+function void     ipc_rank_gather_all_u64       (U64 value, U64 *values_all)                                                        { values_all[0] = value; lane_barrier(); };
+
+#endif
+
 function void log_ipc_context(void) {
   Log_Zone_Scope("IPC Context") {
     log_info("Rank Count:            %u", ipc_rank_count());
@@ -320,4 +349,3 @@ function void log_ipc_context(void) {
     log_info("Global Node Count:     %u", ipc_rank_global_node_count());
   }
 }
-

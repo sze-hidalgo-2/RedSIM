@@ -35,6 +35,9 @@ typedef struct FL_Boundary_Radiation_Wall {
   F32 thermal_conductivity;
   F32 temperature_min;
   F32 temperature_max;
+
+  V2F domain_center;
+  V2F domain_radius;
 } FL_Boundary_Radiation_Wall;
 
 typedef struct FL_Boundary {

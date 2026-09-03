@@ -1,3 +1,5 @@
+#define LIMITER_K 3.f
+
 function void fl_solver_euler_halo_state_pack_send_data(FL_Solver_Euler *euler, FL_State *state) {
   profiler_begin_function();
   UG_Mesh *mesh = euler->mesh;
@@ -699,7 +701,7 @@ function void fl_solver_euler_compute_residual(FL_Solver_Euler *euler, FL_State 
     // NOTE(cmat): Next, we compute gradients and limiters for each local cell.
     // - Those are cells not touching any halo cells; they can still be in touch with ghost cells.
     fl_solver_compute_gradient_range                (euler, state, &euler->gradient, mesh->groups.cells_interior);
-    fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 3.f, mesh->groups.cells_interior);
+    fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, LIMITER_K, mesh->groups.cells_interior);
   }
 
   // NOTE(cmat): Unpack received halo state data.
@@ -710,7 +712,7 @@ function void fl_solver_euler_compute_residual(FL_Solver_Euler *euler, FL_State 
 
   // NOTE(cmat): Compute gradients and limiters for remaining boundary cells
   fl_solver_compute_gradient_range                (euler, state, &euler->gradient, mesh->groups.cells_boundary);
-  fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, 3.f, mesh->groups.cells_boundary);
+  fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, LIMITER_K, mesh->groups.cells_boundary);
 
   // NOTE(cmat): Pack cells for gradient exchange.
   fl_solver_euler_halo_gradient_limiter_pack_send_data(euler, &euler->gradient, &euler->limiter);
@@ -929,7 +931,13 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
   // NOTE(cmat): Synchronize all ranks, for more accurate benchmarking.
   ipc_rank_barrier();
 
-  F32 CFL = 0.85f;
+  // F32 CFL = 0.85f;
+  F32 CFL_max     = 0.85f;
+  F32 CFL_growth  = 1.001f;
+
+  // NOTE(cmat): Starting value.
+  static F32 CFL  = 0.0001f;
+
   U64 clock_start = sys_performance_clock_now();
 
   // NOTE(cmat): Iterate.
@@ -939,7 +947,8 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
   static B32    residual_norm_init  = 0;
   static V3_F64 residual_norm_first = { 0, 0, 0 };
 
-  for Iter_Index(it, 10000) {
+  //for Iter_Index(it, 10000) {
+  for Iter_Index(it, 1000) {
   // for Iter_Index(it, 64) {
   // while (time < .2f) {
     // fl_solver_euler_solve_local_step_forward_euler(euler, CFL);
@@ -952,10 +961,12 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
     F64 time_step = 0;
 #endif
 
+    CFL = f32_min(CFL_max, CFL * CFL_growth);
+
     time         += time_step;
     iteration    += 1;
 
-#if 1
+#if 0
     if (!residual_norm_init || it == 9999) {
     // if (1) {
 
@@ -979,7 +990,7 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
       residual_norm.y /= residual_norm_first.y;
       residual_norm.z /= residual_norm_first.z;
 
-      log_info("TIME %.2g | TIMESTEP %.2g | ITERATION %'llu | RESIDUAL %.2g, %.2g, %.2g", time, time_step, iteration, residual_norm.x, residual_norm.y, residual_norm.z);
+      log_info("TIME %.2g | TIMESTEP %.2g | CFL %.2g | ITERATION %'llu | RESIDUAL %.2g, %.2g, %.2g", time, time_step, CFL, iteration, residual_norm.x, residual_norm.y, residual_norm.z);
     }
 #endif
   }
