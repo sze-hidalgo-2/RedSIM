@@ -133,6 +133,22 @@ function Range1_U64 lane_range(U64 count) {
   return range;
 }
 
+function U32 lane_range_of(U64 offset, U64 count) {
+  U64 lane_cnt        = lane_count();
+  U64 quotient        = count / lane_cnt;
+  U64 remainder       = count % lane_cnt;
+  U64 fat_region_len  = remainder * (quotient + 1);
+  U64 lane_index      = 0;
+
+  if (offset < fat_region_len) {
+    lane_index = offset / (quotient + 1);
+  } else {
+    lane_index = remainder + (offset - fat_region_len) / quotient;
+  }
+
+  return (U32)lane_index;
+}
+
 function void lane_barrier(void) {
   profiler_begin_function();
   sys_barrier_wait(&Thread_Context.group_barrier);

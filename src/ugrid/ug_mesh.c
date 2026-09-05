@@ -1573,3 +1573,30 @@ function void ug_mesh_reorder_by_groups(UG_Mesh *mesh) {
   profiler_end_function();
 }
 
+// ------------------------------------------------------------
+// #-- Face types for residual computation deduplication.
+
+function void ug_mesh_compute_face_compute_type(UG_Mesh *mesh, Range1_U64 group) {
+  U64      group_len = range1_u64_len(group);
+  for Iter_Range(it_local, lane_range(group_len)) {
+    U64 it_cell   = group.min + it_local;
+    U32 this_lane = lane_index();
+    for Iter_Index(it_face, 4) {
+      U32 adjacent = mesh->cells.faces[it_cell].adjacent[it_face];
+      U08 compute  = UG_Cell_Face_Compute_Independent;
+      
+      // NOTE(cmat): Check if cell falls in the same lane.
+      if (adjacent >= group.min && adjacent < group.max) {
+        U64 adjacent_local = adjacent - group.min;
+        U64 adjacent_lane  = lane_range_of(adjacent_local, group_len);
+        if (adjacent_lane == this_lane) {
+          compute = (adjacent > it_cell) ? UG_Cell_Face_Compute_Flux : UG_Cell_Face_Compute_None;
+        }
+      }
+
+      mesh->cells.faces[it_cell].compute[it_face] = compute;
+    }
+  }
+
+  lane_barrier();
+}

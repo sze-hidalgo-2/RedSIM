@@ -20,6 +20,8 @@ typedef struct FL_Solver_Euler {
   F32                *primitive_pressure;
 
   // NOTE(cmat): Time-Step for each cell.
+  F64                *cell_spectral_inviscid_sum;
+  F64                *cell_spectral_viscous_sum;
   F64                *cell_time_step;
   F64                *lane_time_step;
   V3_F64             *lane_state_norm2;

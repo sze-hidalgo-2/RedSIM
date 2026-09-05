@@ -74,6 +74,7 @@ function void thread_group_wait_all   (Thread_Group *thread_group);
 function U32        lane_index              (void);
 function U32        lane_count              (void);
 function Range1_U64 lane_range              (U64 count);
+function U32        lane_range_of           (U64 offset, U64 count);
 function void       lane_barrier            (void);
 function void       lane_broadcast_u64      (U64  *value,   U32 broadcast_lane);
 function void       lane_broadcast_ptr      (void *value,   U32 broadcast_lane);

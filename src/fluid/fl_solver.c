@@ -161,7 +161,9 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
     euler->primitive_v_x               = arena_push_count(arena, F32, euler->flow_1.inner_len + euler->flow_1.halo_len + euler->flow_1.ghost_len);
     euler->primitive_v_y               = arena_push_count(arena, F32, euler->flow_1.inner_len + euler->flow_1.halo_len + euler->flow_1.ghost_len);
     euler->primitive_v_z               = arena_push_count(arena, F32, euler->flow_1.inner_len + euler->flow_1.halo_len + euler->flow_1.ghost_len);
-
+ 
+    euler->cell_spectral_inviscid_sum  = arena_push_count(arena, F64, mesh->cells.len);
+    euler->cell_spectral_viscous_sum   = arena_push_count(arena, F64, mesh->cells.len);
     euler->cell_time_step              = arena_push_count(arena, F64, mesh->cells.len);
     euler->lane_time_step              = arena_push_count(arena, F64, lane_count());
     euler->lane_state_norm2            = arena_push_count(arena, V3_F64, lane_count());
@@ -173,18 +175,19 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
     euler->halo_gradient_limiter_send_dat      = arena_push_count(arena, F32, euler->halo_gradient_limiter_send_len);
   }
 
-  lane_broadcast_ptr(&euler->primitive_pressure, 0);
-  lane_broadcast_ptr(&euler->primitive_v_x,      0);
-  lane_broadcast_ptr(&euler->primitive_v_y,      0);
-  lane_broadcast_ptr(&euler->primitive_v_z,      0);
-
-  lane_broadcast_ptr(&euler->cell_time_step,              0);
-  lane_broadcast_ptr(&euler->lane_time_step,              0);
-  lane_broadcast_ptr(&euler->lane_state_norm2,            0);
-  lane_broadcast_ptr(&euler->halo_state_send_dat,         0);
-  lane_broadcast_ptr(&euler->halo_state_receive_dat,      0);
-  lane_broadcast_ptr(&euler->halo_gradient_limiter_send_dat,      0);
-  lane_broadcast_ptr(&euler->halo_gradient_limiter_receive_dat,   0);
+  lane_broadcast_ptr(&euler->primitive_pressure,                0);
+  lane_broadcast_ptr(&euler->primitive_v_x,                     0);
+  lane_broadcast_ptr(&euler->primitive_v_y,                     0);
+  lane_broadcast_ptr(&euler->primitive_v_z,                     0);
+  lane_broadcast_ptr(&euler->cell_spectral_inviscid_sum,        0);
+  lane_broadcast_ptr(&euler->cell_spectral_viscous_sum,         0);
+  lane_broadcast_ptr(&euler->cell_time_step,                    0);
+  lane_broadcast_ptr(&euler->lane_time_step,                    0);
+  lane_broadcast_ptr(&euler->lane_state_norm2,                  0);
+  lane_broadcast_ptr(&euler->halo_state_send_dat,               0);
+  lane_broadcast_ptr(&euler->halo_state_receive_dat,            0);
+  lane_broadcast_ptr(&euler->halo_gradient_limiter_send_dat,    0);
+  lane_broadcast_ptr(&euler->halo_gradient_limiter_receive_dat, 0);
 
   // NOTE(cmat): Build request list for halo synchronization.
   fl_solver_euler_halo_state_build_request_list             (euler);
@@ -243,6 +246,7 @@ function void fl_solver_euler_compute_primitive_range(FL_Solver_Euler *euler, FL
   profiler_end_function();
 }
 
+#if 0
 function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State *state, FL_State *residual, FL_Gradient_State *grad, Range1_U64 range, B32 compute_time_step, F64 *cell_time_step) {
   profiler_begin_function();
 
@@ -365,6 +369,192 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
   lane_barrier();
   profiler_end_function();
 }
+#else
+
+function void fl_solver_compute_residual_range_base(FL_Solver_Euler *euler, FL_State *state, FL_State *residual, FL_Gradient_State *grad, Range1_U64 range, F64 *cell_time_step, B32 compute_time_step) {
+  profiler_begin_function();
+  UG_Mesh *mesh = euler->mesh;
+  U64 range_len = range1_u64_len(range);
+
+  // NOTE(cmat): Initialize spectral values to zero.
+  // TODO(cmat): Memset instead.
+  for Iter_Range(it_range, lane_range(range_len)) {
+    U64 it_cell = range.min + it_range;
+    for Iter_Index(it_state, 5) {
+      residual->states[it_state][it_cell] = 0.f;
+    }
+  }
+
+  if (compute_time_step) {
+    for Iter_Range(it_range, lane_range(range_len)) {
+      U64 it_cell = range.min + it_range;
+      euler->cell_spectral_inviscid_sum[it_cell] = 0.0;
+      euler->cell_spectral_viscous_sum [it_cell] = 0.0;
+    }
+  }
+
+  lane_barrier();
+
+  // NOTE(cmat): Accumulate face contributions, we only compute flux once.
+  // - (since for each cell, the adjacent face contributes the same with a +/- difference in sign).
+  for Iter_Range(it_range, lane_range(range_len)) {
+    U64            it_cell = range.min + it_range;
+    UG_Cell_Faces *faces   = &mesh->cells.faces[it_cell];
+
+    V5F left_primitive = {
+      .x1 = state->rho[it_cell],
+      .x2 = euler->primitive_v_x[it_cell],
+      .x3 = euler->primitive_v_y[it_cell],
+      .x4 = euler->primitive_v_z[it_cell],
+      .x5 = euler->primitive_pressure[it_cell],
+    };
+
+    // NOTE(cmat): Primitive gradients. We're already storing these as primitive values.
+    V3F left_grad[5] = { };
+    for Iter_Index(it_state, 5) {
+      left_grad[it_state] = v3f(grad->states[it_state].grad_x[it_cell], grad->states[it_state].grad_y[it_cell], grad->states[it_state].grad_z[it_cell]);
+    }
+
+    V3F cell_center = mesh->cells.center[it_cell];
+    F32 cell_volume = mesh->cells.volume[it_cell];
+
+    for Iter_Index(it_face, 4) {
+      UG_Cell_Face_Compute_Type compute = faces->compute[it_face];
+      if (compute == UG_Cell_Face_Compute_None) {
+        continue;
+      }
+
+      U32 adjacent    = faces->adjacent[it_face];
+      V3F normal      = v3f(faces->normal_x[it_face], faces->normal_y[it_face], faces->normal_z[it_face]);
+      F32 area        = faces->area[it_face];
+      V3F face_center = v3f(faces->center_x[it_face], faces->center_y[it_face], faces->center_z[it_face]);
+
+      // NOTE(cmat): Reconstruct left primitive state.
+      F32 left_face_primitive[5] = { };
+      V3F center_delta = v3f_sub(face_center, mesh->cells.center[it_cell]);
+      for Iter_Index(it_state, 5) {
+        F32 cell_limiter  = euler->limiter.states[it_state][it_cell];
+        left_face_primitive[it_state] = left_primitive.dat[it_state] + cell_limiter * v3f_dot(left_grad[it_state], center_delta);
+      }
+
+      // NOTE(cmat): Convert left primitive state to conservative state.
+      V3F left_momentum = v3f_mul(left_face_primitive[0], v3f(left_face_primitive[1], left_face_primitive[2], left_face_primitive[3]));
+      V5F left_state    = v5f(left_face_primitive[0], left_momentum.x, left_momentum.y, left_momentum.z, fl_state_energy_from_pressure(&state->material, left_face_primitive[0], left_momentum, left_face_primitive[4]));
+
+      V5F right_primitive = {
+        .x1 = state->rho[adjacent],
+        .x2 = euler->primitive_v_x[adjacent],
+        .x3 = euler->primitive_v_y[adjacent],
+        .x4 = euler->primitive_v_z[adjacent],
+        .x5 = euler->primitive_pressure[adjacent],
+      };
+
+      // NOTE(cmat): Construct right state.
+      // NOTE(cmat): If the right cell is not a ghost state, it has a gradient.
+      V5F right_state   = { };
+      V3F right_grad[5] = { };
+
+      if (adjacent < (mesh->cells.len + mesh->halos.len)) {
+        for Iter_Index(it_state, 5) {
+          right_grad[it_state] = v3f(grad->states[it_state].grad_x[adjacent], grad->states[it_state].grad_y[adjacent], grad->states[it_state].grad_z[adjacent]);
+        }
+
+        // NOTE(cmat): Construct right primitive state with gradient.
+        F32 right_face_primitive[5] = { };
+        V3F center_delta_r = v3f_sub(face_center, mesh->cells.center[adjacent]);
+        for Iter_Index(it_state, 5) {
+          F32 limiter                    = euler->limiter.states[it_state][adjacent];
+          right_face_primitive[it_state] = right_primitive.dat[it_state] + limiter * v3f_dot(right_grad[it_state], center_delta_r);
+        }
+
+        // NOTE(cmat): Convert right primitive state to conservative state.
+        V3F right_momentum  = v3f_mul(right_face_primitive[0], v3f(right_face_primitive[1], right_face_primitive[2], right_face_primitive[3]));
+        right_state         = v5f(right_face_primitive[0], right_momentum.x, right_momentum.y, right_momentum.z, fl_state_energy_from_pressure(&state->material, right_face_primitive[0], right_momentum, right_face_primitive[4]));
+
+      // NOTE(cmat): If the right cell is a ghost state, it has a gradient zero. We fallback to first order.
+      } else {
+        // NOTE(cmat): Zero-out gradient.
+        Stack_Array_Zero(right_grad);
+
+        right_state = fl_state_get(state, adjacent);
+      }
+
+      F32 right_volume = mesh->cells.volume[adjacent];
+
+      FL_Flux flux_inviscid   = fl_flux_hllc                    (left_state, right_state, normal, state->material.gamma);
+      FL_Flux flux_viscous    = fl_flux_viscous_smagorinsky_LES (left_primitive, left_grad, cell_center, right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, cell_volume, right_volume, &state->material);
+      V5F     flux_total      = v5f_sub(flux_inviscid.state, flux_viscous.state);
+
+      // NOTE(cmat): Update own cell.
+      for Iter_Index(it_state, 5) {
+        residual->states[it_state][it_cell] -= area * flux_total.dat[it_state];
+      }
+      
+      // NOTE(cmat): Updating adjacent cell.
+      if (compute == UG_Cell_Face_Compute_Flux) {
+        for Iter_Index(it_state, 5) {
+          residual->states[it_state][adjacent] += area * flux_total.dat[it_state];
+        }
+      }
+
+      if (compute_time_step) {
+        euler->cell_spectral_inviscid_sum[it_cell] += (F64)area * (F64)flux_inviscid.lambda_max;
+        euler->cell_spectral_viscous_sum [it_cell] += (F64)flux_viscous.lambda_viscous;
+
+        if (compute == UG_Cell_Face_Compute_Flux) {
+          euler->cell_spectral_inviscid_sum[adjacent] += (F64)area * (F64)flux_inviscid.lambda_max;
+          euler->cell_spectral_viscous_sum [adjacent] += (F64)flux_viscous.lambda_viscous;
+        }
+      }
+    }
+  }
+
+  lane_barrier();
+
+  // NOTE(cmat): Divide by volume, add source term, compute local time-step.
+  for Iter_Range(it_range, lane_range(range_len)) {
+    U64 it_cell     = range.min + it_range;
+    F32 volume      = mesh->cells.volume[it_cell];
+    F32 volume_rcp  = 1.f / volume;
+
+    V3F velocity = v3f(euler->primitive_v_x[it_cell], euler->primitive_v_y[it_cell], euler->primitive_v_z[it_cell]);
+    F32 rho      = state->rho[it_cell];
+    V5F source_term = {
+      .x1 = 0,
+      .x2 = rho * euler->gravity.x,
+      .x3 = rho * euler->gravity.y,
+      .x4 = rho * euler->gravity.z,
+      .x5 = rho * v3f_dot(velocity, euler->gravity),
+    };
+
+    residual->rho    [it_cell] = residual->rho    [it_cell] * volume_rcp + source_term.x1;
+    residual->rho_v1 [it_cell] = residual->rho_v1 [it_cell] * volume_rcp + source_term.x2;
+    residual->rho_v2 [it_cell] = residual->rho_v2 [it_cell] * volume_rcp + source_term.x3;
+    residual->rho_v3 [it_cell] = residual->rho_v3 [it_cell] * volume_rcp + source_term.x4;
+    residual->energy [it_cell] = residual->energy [it_cell] * volume_rcp + source_term.x5;
+
+    if (compute_time_step) {
+      F64 spectral_sum = euler->cell_spectral_inviscid_sum[it_cell] + euler->cell_spectral_viscous_sum[it_cell];
+      cell_time_step[it_cell] = (F64)volume / spectral_sum;
+    }
+  }
+  lane_barrier();
+  profiler_end_function();
+}
+
+function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State *state, FL_State *residual, FL_Gradient_State *grad, Range1_U64 range) {
+  profiler_begin_function();
+  fl_solver_compute_residual_range_base(euler, state, residual, grad, range, 0, 0);
+  profiler_end_function();
+}
+
+function void fl_solver_compute_residual_range_with_time_step(FL_Solver_Euler *euler, FL_State *state, FL_State *residual, FL_Gradient_State *grad, Range1_U64 range, F64 *cell_time_step) {
+  profiler_begin_function();
+  fl_solver_compute_residual_range_base(euler, state, residual, grad, range, cell_time_step, 1);
+  profiler_end_function();
+}
+
+#endif
 
 function void fl_solver_compute_gradient_range(FL_Solver_Euler *euler, FL_State *state, FL_Gradient_State *gradient, Range1_U64 range) {
   profiler_begin_function();
@@ -604,9 +794,131 @@ function void fl_solver_compute_limiter_venkatakrishnan_range(FL_Solver_Euler *e
   lane_barrier();
   profiler_end_function();
 }
-
-
 #endif
+
+function void fl_solver_compute_gradient_and_limiter_range(FL_Solver_Euler *euler, FL_State *state, FL_Gradient_State *gradient, FL_Limiter_State *limiter, F32 K, Range1_U64 range) {
+  profiler_begin_function();
+  U64 range_len = range1_u64_len(range);
+  UG_Mesh *mesh = euler->mesh;
+
+  F32_X04 zero_v = f32_x04_load_f32(0.f);
+  F32_X04 one_v  = f32_x04_load_f32(1.f);
+  F32_X04 two_v  = f32_x04_load_f32(2.f);
+  F32_X04 eps_v  = f32_x04_load_f32(1e-12f);
+
+  for Iter_Range(it_range, lane_range(range_len)) {
+    U64               it_cell   = range.min + it_range;
+    UG_Cell_Faces    *faces     = &mesh->cells.faces[it_cell];
+    UG_Cell_Gradient *grad_geo  = &mesh->cells.gradients[it_cell];
+    F32               volume    = mesh->cells.volume[it_cell];
+    F32               eps2      = (K * K * K) * volume;
+
+    V5F self_prim = {
+      .x1 = state->rho[it_cell],
+      .x2 = euler->primitive_v_x[it_cell],
+      .x3 = euler->primitive_v_y[it_cell],
+      .x4 = euler->primitive_v_z[it_cell],
+      .x5 = euler->primitive_pressure[it_cell],
+    };
+
+    // NOTE(cmat): Single gather of the 4 neighbours' primitives, reused for both
+    // the least-squares gradient accumulation AND the limiter's min/max — this
+    // used to be two separate gathers (one in the gradient pass, one in the
+    // limiter pass) touching the same adjacent-cell data.
+    V3F b[5] = { };
+    V5F primitive_min = self_prim;
+    V5F primitive_max = self_prim;
+    for Iter_Index(it_face, 4) {
+      U32 adjacent = faces->adjacent[it_face];
+      V5F adj_prim = {
+        .x1 = state->rho[adjacent],
+        .x2 = euler->primitive_v_x[adjacent],
+        .x3 = euler->primitive_v_y[adjacent],
+        .x4 = euler->primitive_v_z[adjacent],
+        .x5 = euler->primitive_pressure[adjacent],
+      };
+      V3F w = grad_geo->weight_dx[it_face];
+      for Iter_Index(it_state, 5) {
+        b[it_state] = v3f_add(b[it_state], v3f_mul(adj_prim.dat[it_state] - self_prim.dat[it_state], w));
+        primitive_min.dat[it_state] = f32_min(primitive_min.dat[it_state], adj_prim.dat[it_state]);
+        primitive_max.dat[it_state] = f32_max(primitive_max.dat[it_state], adj_prim.dat[it_state]);
+      }
+    }
+
+    // NOTE(cmat): Compute gradient per state, keep the result in locals (cell_grad)
+    // so the limiter pass below can use it directly without reading it back from
+    // the gradient arrays it was just written to.
+    V3F cell_grad[5];
+    for Iter_Index(it_state, 5) {
+      F32 gx = grad_geo->inv_A_xx * b[it_state].x + grad_geo->inv_A_xy * b[it_state].y + grad_geo->inv_A_xz * b[it_state].z;
+      F32 gy = grad_geo->inv_A_xy * b[it_state].x + grad_geo->inv_A_yy * b[it_state].y + grad_geo->inv_A_yz * b[it_state].z;
+      F32 gz = grad_geo->inv_A_xz * b[it_state].x + grad_geo->inv_A_yz * b[it_state].y + grad_geo->inv_A_zz * b[it_state].z;
+      cell_grad[it_state] = v3f(gx, gy, gz);
+      gradient->states[it_state].grad_x[it_cell] = gx;
+      gradient->states[it_state].grad_y[it_cell] = gy;
+      gradient->states[it_state].grad_z[it_cell] = gz;
+    }
+
+    // NOTE(cmat): Venkatakrishnan limiter, vectorized across the 4 faces, reusing
+    // cell_grad and primitive_min/max computed above instead of re-gathering or
+    // re-deriving them.
+    F32_X04 face_center_x = f32_x04_load(faces->center_x);
+    F32_X04 face_center_y = f32_x04_load(faces->center_y);
+    F32_X04 face_center_z = f32_x04_load(faces->center_z);
+    F32_X04 cell_center_x = f32_x04_load_f32(mesh->cells.center[it_cell].x);
+    F32_X04 cell_center_y = f32_x04_load_f32(mesh->cells.center[it_cell].y);
+    F32_X04 cell_center_z = f32_x04_load_f32(mesh->cells.center[it_cell].z);
+    F32_X04 delta_x = f32_x04_sub(face_center_x, cell_center_x);
+    F32_X04 delta_y = f32_x04_sub(face_center_y, cell_center_y);
+    F32_X04 delta_z = f32_x04_sub(face_center_z, cell_center_z);
+    F32_X04 eps2_v  = f32_x04_load_f32(eps2);
+
+    for Iter_Index(it_state, 5) {
+      F32 delta_max = primitive_max.dat[it_state] - self_prim.dat[it_state];
+      F32 delta_min = primitive_min.dat[it_state] - self_prim.dat[it_state];
+
+      F32_X04 grad_x_v = f32_x04_load_f32(cell_grad[it_state].x);
+      F32_X04 grad_y_v = f32_x04_load_f32(cell_grad[it_state].y);
+      F32_X04 grad_z_v = f32_x04_load_f32(cell_grad[it_state].z);
+
+      // NOTE(cmat): delta_face for all 4 faces at once — dot(cell_grad, center_delta).
+      F32_X04 delta_face = f32_x04_mul(grad_x_v, delta_x);
+      delta_face         = f32_x04_fused_mul_add(grad_y_v, delta_y, delta_face);
+      delta_face         = f32_x04_fused_mul_add(grad_z_v, delta_z, delta_face);
+
+      F32_X04 delta_max_v = f32_x04_load_f32(delta_max);
+      F32_X04 delta_min_v = f32_x04_load_f32(delta_min);
+
+      // NOTE(cmat): abs(delta_face) > vk_epsilon, computed branchlessly for all 4 faces.
+      F32_X04 abs_delta_face = f32_x04_max(delta_face, f32_x04_sub(zero_v, delta_face));
+      F32_X04 valid_mask     = f32_x04_cmp_gt(abs_delta_face, eps_v);
+
+      // NOTE(cmat): delta_bound = delta_face > 0 ? delta_max : delta_min
+      F32_X04 positive_mask = f32_x04_cmp_gt(delta_face, zero_v);
+      F32_X04 delta_bound   = f32_x04_select(positive_mask, delta_max_v, delta_min_v);
+
+      // NOTE(cmat): Safe to divide even where delta_face ~ 0 — result may be Inf/NaN there,
+      // - but valid_mask discards that lane in the final select below (bit-select, not arithmetic).
+      F32_X04 delta_face_rcp = f32_x04_div(one_v, delta_face);
+      F32_X04 y              = f32_x04_mul(delta_bound, delta_face_rcp);
+      F32_X04 eps2_norm      = f32_x04_mul(f32_x04_mul(eps2_v, delta_face_rcp), delta_face_rcp);
+      F32_X04 y2          = f32_x04_mul(y, y);
+      F32_X04 numerator   = f32_x04_add(f32_x04_fused_mul_add(two_v, y, y2), eps2_norm);
+      F32_X04 denominator = f32_x04_add(f32_x04_add(y2, y), f32_x04_add(two_v, eps2_norm));
+      F32_X04 phi_computed = f32_x04_div(numerator, denominator);
+      F32_X04 phi_face_v   = f32_x04_select(valid_mask, phi_computed, one_v);
+
+      // NOTE(cmat): Horizontal min across the 4 faces -> phi_cell for this state.
+      F32 phi_lanes[4];
+      f32_x04_store(phi_lanes, phi_face_v);
+      F32 phi_cell = f32_min(f32_min(phi_lanes[0], phi_lanes[1]), f32_min(phi_lanes[2], phi_lanes[3]));
+
+      limiter->states[it_state][it_cell] = phi_cell;
+    }
+  }
+  lane_barrier();
+  profiler_end_function();
+}
 
 
 function F32 fl_solver_compute_global_time_step(FL_Solver_Euler *euler, F64 *time_steps) {
@@ -700,8 +1012,12 @@ function void fl_solver_euler_compute_residual(FL_Solver_Euler *euler, FL_State 
 
     // NOTE(cmat): Next, we compute gradients and limiters for each local cell.
     // - Those are cells not touching any halo cells; they can still be in touch with ghost cells.
+#if 0
     fl_solver_compute_gradient_range                (euler, state, &euler->gradient, mesh->groups.cells_interior);
     fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, LIMITER_K, mesh->groups.cells_interior);
+#else
+    fl_solver_compute_gradient_and_limiter_range(euler, state, &euler->gradient, &euler->limiter, LIMITER_K, mesh->groups.cells_interior);
+#endif
   }
 
   // NOTE(cmat): Unpack received halo state data.
@@ -711,8 +1027,12 @@ function void fl_solver_euler_compute_residual(FL_Solver_Euler *euler, FL_State 
   fl_solver_euler_compute_primitive_range(euler, state, range1_u64(mesh->cells.len, mesh->cells.len + mesh->halos.len));
 
   // NOTE(cmat): Compute gradients and limiters for remaining boundary cells
+#if 0
   fl_solver_compute_gradient_range                (euler, state, &euler->gradient, mesh->groups.cells_boundary);
   fl_solver_compute_limiter_venkatakrishnan_range (euler, state, &euler->gradient, &euler->limiter, LIMITER_K, mesh->groups.cells_boundary);
+#else
+  fl_solver_compute_gradient_and_limiter_range(euler, state, &euler->gradient, &euler->limiter, LIMITER_K, mesh->groups.cells_boundary);
+#endif
 
   // NOTE(cmat): Pack cells for gradient exchange.
   fl_solver_euler_halo_gradient_limiter_pack_send_data(euler, &euler->gradient, &euler->limiter);
@@ -721,14 +1041,22 @@ function void fl_solver_euler_compute_residual(FL_Solver_Euler *euler, FL_State 
   IPC_Request_Scope(&euler->halo_gradient_limiter_request_list) {
 
     // NOTE(cmat): Compute the residual of all interior cells.
-    fl_solver_compute_residual_range(euler, state, residual, &euler->gradient, mesh->groups.cells_interior, compute_time_step, euler->cell_time_step);
+    if (compute_time_step) {
+      fl_solver_compute_residual_range_with_time_step(euler, state, residual, &euler->gradient, mesh->groups.cells_interior, euler->cell_time_step);
+    } else {
+      fl_solver_compute_residual_range(euler, state, residual, &euler->gradient, mesh->groups.cells_interior);
+    }
   }
 
   // NOTE(cmat): Unpack received gradient state data.
   fl_solver_euler_halo_gradient_limiter_unpack_receive_data(euler, &euler->gradient, &euler->limiter);
 
   // NOTE(cmat): Compute residual for remaining boundary cells
-  fl_solver_compute_residual_range(euler, state, residual, &euler->gradient, mesh->groups.cells_boundary, compute_time_step, euler->cell_time_step);
+    if (compute_time_step) {
+      fl_solver_compute_residual_range_with_time_step(euler, state, residual, &euler->gradient, mesh->groups.cells_boundary, euler->cell_time_step);
+    } else {
+      fl_solver_compute_residual_range(euler, state, residual, &euler->gradient, mesh->groups.cells_boundary);
+    }
 
   lane_barrier();
   profiler_end_function();
@@ -949,7 +1277,7 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
 
   for Iter_Index(it, 10000) {
   // for Iter_Index(it, 1000) {
-  // for Iter_Index(it, 64) {
+  // for Iter_Index(it, 640) {
   // while (time < .2f) {
     // fl_solver_euler_solve_local_step_forward_euler(euler, CFL);
     // fl_solver_euler_solve_local_step_SSP_RK_4_3(euler, CFL);
@@ -966,7 +1294,7 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
     time         += time_step;
     iteration    += 1;
 
-#if 1
+#if 0
     if (!residual_norm_init || it == 9999) {
     // if (1) {
 

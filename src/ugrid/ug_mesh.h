@@ -1,3 +1,15 @@
+
+
+// NOTE(cmat): We classify faces by type,
+// - based on how we iterate over them when computing
+// - residuals, since we want to avoid having to recompute
+// - the residual twice.
+typedef enum UG_Cell_Face_Compute_Type {
+  UG_Cell_Face_Compute_None,
+  UG_Cell_Face_Compute_Flux,
+  UG_Cell_Face_Compute_Independent,
+} UG_Cell_Face_Compute_Type;
+
 // NOTE(cmat): We are storing face information twice, duplicated.
 // - This is done on purpose, since it allows us to write SIMD code
 // - processing each faces at once, and also gives better cache locality,
@@ -19,6 +31,7 @@ typedef struct UG_Cell_Faces {
   F32 center_x  [4]; // NOTE(cmat): Face center.
   F32 center_y  [4];
   F32 center_z  [4];
+  U08 compute   [4]; // NOTE(cmat): Face compute type.
 } UG_Cell_Faces;
 
 // NOTE(cmat): Gradient computation with Least-Squares reconstruction.

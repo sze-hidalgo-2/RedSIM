@@ -90,10 +90,14 @@ function void redsim_group_entry(void *user_data) {
   ug_mesh_optimize_reorder(&mesh, mesh.groups.cells_interior);
   ug_mesh_optimize_reorder(&mesh, mesh.groups.cells_boundary);
 
+  // NOTE(cmat): Compute face types, for residual computations.
+  ug_mesh_compute_face_compute_type(&mesh, mesh.groups.cells_interior);
+  ug_mesh_compute_face_compute_type(&mesh, mesh.groups.cells_boundary);
+
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
-#if 1
+#if 0
   FL_Boundary_Atmospheric atm = {
     .temperature_ground = 291.15f,  // 18 °C — mild summer night
     .pressure_ground    = 94000.f,  // ~940 hPa at Madrid elevation
@@ -205,7 +209,7 @@ function void redsim_group_entry(void *user_data) {
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 3);
   if (lane_index() == 0) {
-#if 1
+#if 0
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm  };
@@ -244,7 +248,7 @@ function void redsim_group_entry(void *user_data) {
   flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step);
 
   F32 time = 0;
-  for Iter_Index(it, 500) {
+  for Iter_Index(it, 1) {
   // for Iter_Index(it, 1) {
     F32 time_step = fl_solver_euler_solve(&solver, 0.f);
     time += fl_scale_denormalize_time(&ref_scale, time_step);
