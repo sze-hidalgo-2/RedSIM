@@ -93,11 +93,37 @@ function void redsim_group_entry(void *user_data) {
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
-#if 0
-  FL_Boundary_Farfield farfield = {
-    .density  = 1.225f,
-    .velocity = v3f_mul(5.f, v3f(f32_cos(wind_angle), f32_sin(wind_angle), 0)),
-    .pressure = 101325.f,
+#if 1
+  FL_Boundary_Atmospheric atm = {
+    .temperature_ground = 291.15f,  // 18 °C — mild summer night
+    .pressure_ground    = 94000.f,  // ~940 hPa at Madrid elevation
+    .gravity            = 9.81f,
+    .lapse_rate         = 0.0065f,
+    .wind_angle         = f32_pi,
+    .wind_d             = 0.f,
+    .wind_z0            = 0.03f,
+    .wind_z_ref         = 10.f,
+    .wind_u_ref         = 2.0f,      // ~7 km/h — light nighttime breeze
+  };
+
+  FL_Boundary_Radiation_Wall wall = {
+    .solar_irradiance     = 0.f,     // no sun
+    .gamma_coeff          = 0.85f,   // concrete/stone emissivity
+    .albedo               = 0.20f,   // irrelevant with zero solar irradiance
+    .sky_view_factor      = 0.4f,
+    .diffuse_fraction     = 0.f,     // no solar radiation
+    .cos_zenith            = 0.f,     // sun below horizon
+    .thermal_conductivity = 0.026f,
+
+    .temperature_min      = 285.15f, // 12 °C — cool surface
+    .temperature_max      = 298.15f, // 25 °C — residual heat from daytime
+
+    .domain_center        = v3f_mul(.5f,
+                                    v3f_add(mesh.bounds_global.min,
+                                             mesh.bounds_global.max)).xy,
+    .domain_radius        = v3f_mul(.5f,
+                                     v3f_sub(mesh.bounds_global.max,
+                                             mesh.bounds_global.min)).xy,
   };
 #else
   FL_Boundary_Atmospheric atm = {
