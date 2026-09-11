@@ -136,6 +136,24 @@ function void fl_solver_euler_halo_gradient_limiter_build_request_list(FL_Solver
   profiler_end_function();
 }
 
+function void fl_solver_euler_init_implicit(FL_Solver_Euler *euler, FL_Material material, UG_Mesh *mesh, Arena *arena) {
+  fl_state_init(&euler->newton_state_pert,    material, mesh, 1, arena); // needs halo+ghost slots
+  fl_state_init(&euler->newton_residual_pert, material, mesh, 0, arena);
+  fl_state_init(&euler->newton_residual0,     material, mesh, 0, arena);
+  fl_state_init(&euler->newton_rhs,           material, mesh, 0, arena);
+  fl_state_init(&euler->newton_dQ,            material, mesh, 0, arena);
+  fl_state_init(&euler->krylov_z,             material, mesh, 0, arena);
+
+  for Iter_Index(i, NEWTON_GMRES_M + 1) {
+    fl_state_init(&euler->krylov_basis[i], material, mesh, 0, arena);
+  }
+
+  if (lane_index() == 0) {
+    euler->reduce_scratch = arena_push_count(arena, F32, lane_count());
+  }
+  lane_broadcast_ptr(&euler->reduce_scratch, 0);
+}
+
 function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boundary, FL_Scale scale, FL_Material material, V3F gravity, UG_Mesh *mesh, Arena *arena) {
   Zero_Fill(euler);
 
@@ -162,6 +180,8 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
     euler->primitive_v_y               = arena_push_count(arena, F32, euler->flow_1.inner_len + euler->flow_1.halo_len + euler->flow_1.ghost_len);
     euler->primitive_v_z               = arena_push_count(arena, F32, euler->flow_1.inner_len + euler->flow_1.halo_len + euler->flow_1.ghost_len);
 
+    euler->cell_spectral_inviscid_sum  = arena_push_count(arena, F64, mesh->cells.len);
+    euler->cell_spectral_viscous_sum   = arena_push_count(arena, F64, mesh->cells.len);
     euler->cell_time_step              = arena_push_count(arena, F64, mesh->cells.len);
     euler->lane_time_step              = arena_push_count(arena, F64, lane_count());
     euler->lane_state_norm2            = arena_push_count(arena, V3_F64, lane_count());
@@ -172,6 +192,9 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
     euler->halo_gradient_limiter_receive_dat   = arena_push_count(arena, F32, euler->halo_gradient_limiter_receive_len);
     euler->halo_gradient_limiter_send_dat      = arena_push_count(arena, F32, euler->halo_gradient_limiter_send_len);
   }
+
+  lane_broadcast_ptr(&euler->cell_spectral_inviscid_sum, 0);
+  lane_broadcast_ptr(&euler->cell_spectral_viscous_sum, 0);
 
   lane_broadcast_ptr(&euler->primitive_pressure, 0);
   lane_broadcast_ptr(&euler->primitive_v_x,      0);
@@ -192,6 +215,9 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
 
   // TODO(cmat): Temporary.
   euler->gravity = gravity;
+ 
+
+  fl_solver_euler_init_implicit(euler, material, mesh, arena);
 }
 
 function void fl_solver_compute_ghost(FL_Solver_Euler *euler, FL_State *state) {
@@ -243,10 +269,19 @@ function void fl_solver_euler_compute_primitive_range(FL_Solver_Euler *euler, FL
   profiler_end_function();
 }
 
+#if 1
 function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State *state, FL_State *residual, FL_Gradient_State *grad, Range1_U64 range, B32 compute_time_step, F64 *cell_time_step) {
   profiler_begin_function();
 
   U64 range_len = range1_u64_len(range);
+  if (compute_time_step) {
+    for Iter_Range(it_range, lane_range(range_len)) {
+      U64 it_cell = range.min + it_range;
+      euler->cell_spectral_inviscid_sum[it_cell] = 0.0;
+      euler->cell_spectral_viscous_sum [it_cell] = 0.0;
+    }
+  }
+
   UG_Mesh *mesh = euler->mesh;
   for Iter_Range(it_range, lane_range(range_len)) {
     U64            it_cell        = range.min + it_range;
@@ -270,8 +305,8 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
     V3F cell_center   = mesh->cells.center[it_cell];
     F32 cell_volume   = mesh->cells.volume[it_cell];
 
-    F64 spectral_inviscid_sum = 0.f;
-    F64 spectral_viscous_sum  = 0.f;
+    // F64 spectral_inviscid_sum = 0.f;
+    // F64 spectral_viscous_sum  = 0.f;
     for Iter_Index(it_face, 4) {
       U32 adjacent     = faces->adjacent[it_face];
       V3F normal       = v3f(faces->normal_x[it_face], faces->normal_y[it_face], faces->normal_z[it_face]);
@@ -334,8 +369,13 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
       FL_Flux flux_viscous    = fl_flux_viscous_smagorinsky_LES (left_primitive, left_grad, cell_center, right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, cell_volume, right_volume, &state->material);
       V5F     flux_total      = v5f_sub(flux_inviscid.state, flux_viscous.state);
       cell_residual           = v5f_sub(cell_residual, v5f_mul(area, flux_total));
-      spectral_inviscid_sum  += (F64)area * (F64)flux_inviscid.lambda_max;
-      spectral_viscous_sum   +=(F64)flux_viscous.lambda_viscous;
+
+      if (compute_time_step) {
+        //spectral_inviscid_sum  += (F64)area * (F64)flux_inviscid.lambda_max;
+        euler->cell_spectral_inviscid_sum[it_cell]  += (F64)area * (F64)flux_inviscid.lambda_max;
+        // spectral_viscous_sum   +=(F64)flux_viscous.lambda_viscous;
+        euler->cell_spectral_viscous_sum[it_cell]  += (F64)flux_viscous.lambda_viscous;
+      }
     }
 
     F32 volume     = mesh->cells.volume[it_cell];
@@ -358,13 +398,19 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
     residual->energy  [it_cell] = cell_residual.x5 * volume_rcp + source_term.x5;
 
     if (compute_time_step) {
-      cell_time_step[it_cell] = (F64)volume / (spectral_inviscid_sum + spectral_viscous_sum);
+      // cell_time_step[it_cell] = (F64)volume / (spectral_inviscid_sum + spectral_viscous_sum);
+      cell_time_step[it_cell] = (F64)volume / (euler->cell_spectral_inviscid_sum[it_cell] + euler->cell_spectral_viscous_sum[it_cell] );
     }
   }
 
   lane_barrier();
   profiler_end_function();
 }
+#else
+
+
+#endif
+
 
 function void fl_solver_compute_gradient_range(FL_Solver_Euler *euler, FL_State *state, FL_Gradient_State *gradient, Range1_U64 range) {
   profiler_begin_function();
@@ -631,7 +677,7 @@ function F32 fl_solver_compute_global_time_step(FL_Solver_Euler *euler, F64 *tim
   }
 
   // NOTE(cmat): Synchronize minimum time_step across lanes.
-  lane_broadcast_u64((U64 *)&global_time_step, 0);
+  lane_broadcast_type(&global_time_step, 0);
 
 
   // NOTE(cmat): Synchronize minimum time_step across IPC ranks.
@@ -931,12 +977,7 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
   // NOTE(cmat): Synchronize all ranks, for more accurate benchmarking.
   ipc_rank_barrier();
 
-  // F32 CFL = 0.85f;
-  F32 CFL_max     = 0.85f;
-  F32 CFL_growth  = 1.001f;
-
-  // NOTE(cmat): Starting value.
-  static F32 CFL  = 0.0001f;
+  F32 CFL = 0.85f;
 
   U64 clock_start = sys_performance_clock_now();
 
@@ -961,14 +1002,12 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
     F64 time_step = 0;
 #endif
 
-    CFL = f32_min(CFL_max, CFL * CFL_growth);
-
     time         += time_step;
     iteration    += 1;
 
 #if 1
-    if (!residual_norm_init || it == 9999) {
-    // if (1) {
+    // if (!residual_norm_init || it == 9999) {
+    if (1) {
 
       // NOTE(cmat): Compute current residual.
       fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 0);
@@ -976,21 +1015,23 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
       // NOTE(cmat): Compute residual norm.
       V3_F64 residual_norm = fl_solver_euler_compute_state_norm2(euler, &euler->residual, range1_u64(0, euler->mesh->cells.len));
 
-      residual_norm   = v3_f64_div  (residual_norm, (F64)euler->mesh->cells.len);
-      residual_norm.x = f64_sqrt    (residual_norm.x);
-      residual_norm.y = f64_sqrt    (residual_norm.y);
-      residual_norm.z = f64_sqrt    (residual_norm.z);
-      
-      If_Unlikely (!residual_norm_init) {
-        residual_norm_init = 1;
-        residual_norm_first = residual_norm;
+      if (lane_index() == 0) {
+        residual_norm   = v3_f64_div  (residual_norm, (F64)euler->mesh->cells.len);
+        residual_norm.x = f64_sqrt    (residual_norm.x);
+        residual_norm.y = f64_sqrt    (residual_norm.y);
+        residual_norm.z = f64_sqrt    (residual_norm.z);
+        
+        If_Unlikely (!residual_norm_init) {
+          residual_norm_init = 1;
+          residual_norm_first = residual_norm;
+        }
+
+        residual_norm.x /= residual_norm_first.x;
+        residual_norm.y /= residual_norm_first.y;
+        residual_norm.z /= residual_norm_first.z;
+
+        log_info("TIME %.2g | TIMESTEP %.2g | CFL %.2g | ITERATION %'llu | RESIDUAL %.2g, %.2g, %.2g", time, time_step, CFL, iteration, residual_norm.x, residual_norm.y, residual_norm.z);
       }
-
-      residual_norm.x /= residual_norm_first.x;
-      residual_norm.y /= residual_norm_first.y;
-      residual_norm.z /= residual_norm_first.z;
-
-      log_info("TIME %.2g | TIMESTEP %.2g | CFL %.2g | ITERATION %'llu | RESIDUAL %.2g, %.2g, %.2g", time, time_step, CFL, iteration, residual_norm.x, residual_norm.y, residual_norm.z);
     }
 #endif
   }

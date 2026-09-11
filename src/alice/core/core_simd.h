@@ -34,6 +34,36 @@ force_inline function F32_X04  f32_x04_min                         (F32_X04 lhs,
 force_inline function F32_X04  f32_x04_cmp_gt                      (F32_X04 lhs, F32_X04 rhs)                         { return (F32_X04) { .simd = _mm_cmpgt_ps(lhs.simd, rhs.simd) }; }
 force_inline function F32_X04  f32_x04_select                      (F32_X04 mask, F32_X04 if_true, F32_X04 if_false)  { return (F32_X04) { .simd = _mm_blendv_ps(if_false.simd, if_true.simd, mask.simd) }; }
 
+#elif ARCH_ARM
+#include <arm_neon.h>
+
+// NOTE(cmat): Basic 4x wide types
+typedef union {
+  float32x4_t simd;
+  F32         data[4];
+} F32_X04;
+
+// NOTE(cmat): Basic 4x wide ops
+force_inline function F32_X04  f32_x04_load                        (F32 *ptr)                                         { return (F32_X04)  { .simd = vld1q_f32(ptr) }; }
+force_inline function F32_X04  f32_x04_load_aligned                (F32 *ptr)                                         { return (F32_X04)  { .simd = vld1q_f32(ptr) }; }
+force_inline function F32_X04  f32_x04_load_f32                    (F32 x)                                            { return (F32_X04)  { .simd = vdupq_n_f32(x) }; }
+
+force_inline function void      f32_x04_store                      (F32 *ptr, F32_X04 value)                          { vst1q_f32(ptr, value.simd); }
+force_inline function void      f32_x04_store_aligned              (F32 *ptr, F32_X04 value)                          { vst1q_f32(ptr, value.simd); }
+
+force_inline function F32_X04  f32_x04_add                         (F32_X04 lhs, F32_X04 rhs)                         { return (F32_X04)  { .simd = vaddq_f32(lhs.simd, rhs.simd) }; }
+force_inline function F32_X04  f32_x04_sub                         (F32_X04 lhs, F32_X04 rhs)                         { return (F32_X04)  { .simd = vsubq_f32(lhs.simd, rhs.simd) }; }
+force_inline function F32_X04  f32_x04_mul                         (F32_X04 lhs, F32_X04 rhs)                         { return (F32_X04)  { .simd = vmulq_f32(lhs.simd, rhs.simd) }; }
+force_inline function F32_X04  f32_x04_div                         (F32_X04 lhs, F32_X04 rhs)                         { return (F32_X04)  { .simd = vdivq_f32(lhs.simd, rhs.simd) }; }
+force_inline function F32_X04  f32_x04_square_root                 (F32_X04 x)                                        { return (F32_X04)  { .simd = vsqrtq_f32(x.simd) }; }
+force_inline function F32_X04  f32_x04_fused_mul_add               (F32_X04 a, F32_X04 b, F32_X04 c)                  { return (F32_X04)  { .simd = vfmaq_f32(c.simd, a.simd, b.simd) }; }
+force_inline function F32_X04  f32_x04_fused_mul_sub               (F32_X04 a, F32_X04 b, F32_X04 c)                  { return (F32_X04){ .simd = vnegq_f32(vfmsq_f32(c.simd, a.simd, b.simd)) }; }
+
+force_inline function F32_X04  f32_x04_max                         (F32_X04 lhs, F32_X04 rhs)                         { return (F32_X04) { .simd = vmaxq_f32(lhs.simd, rhs.simd) }; }
+force_inline function F32_X04  f32_x04_min                         (F32_X04 lhs, F32_X04 rhs)                         { return (F32_X04) { .simd = vminq_f32(lhs.simd, rhs.simd) }; }
+force_inline function F32_X04  f32_x04_cmp_gt                      (F32_X04 lhs, F32_X04 rhs)                         { return (F32_X04) { .simd = vreinterpretq_f32_u32(vcgtq_f32(lhs.simd, rhs.simd)) }; }
+force_inline function F32_X04  f32_x04_select                      (F32_X04 mask, F32_X04 if_true, F32_X04 if_false)  { return (F32_X04) { .simd = vbslq_f32(vreinterpretq_u32_f32(mask.simd), if_true.simd, if_false.simd) }; }
+
 #else
 #error "Unsupported Architecture for SIMD"
 

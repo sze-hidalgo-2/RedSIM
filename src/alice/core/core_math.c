@@ -55,11 +55,57 @@
     return t;
   }
 
+#elif ARCH_ARM
+
+# include <arm_neon.h>
+
+  function F32 f32_sqrt(F32 x) {
+    float32x2_t v = vdup_n_f32(x);
+    v              = vsqrt_f32(v);
+    F32 result     = vget_lane_f32(v, 0);
+    return result;
+  }
+
+  function F32 f32_floor(F32 x) {
+    I32 i = (I32)x;
+    F32 t = (F32)i;
+    t     = (t > x) ? (t - 1.f) : t;
+    return t;
+  }
+
+  function F32 f32_ceil(F32 x) {
+    I32 i = (I32)x;
+    F32 t = (F32)i;
+    t     = (t < x) ? (t + 1.f) : t;
+    return t;
+  }
+
+  function F64 f64_sqrt(F64 x) {
+    float64x1_t v = vdup_n_f64(x);
+    v              = vsqrt_f64(v);
+    F64 result     = vget_lane_f64(v, 0);
+    return result;
+  }
+
+  function F64 f64_floor(F64 x) {
+    I64 i = (I64)x;
+    F64 t = (F64)i;
+    t     = (t > x) ? (t - 1.0) : t;
+    return t;
+  }
+
+  function F64 f64_ceil(F64 x) {
+    I64 i = (I64)x;
+    F64 t = (F64)i;
+    t     = (t < x) ? (t + 1.0) : t;
+    return t;
+  }
+
 #else
-  // TODO(cmat): ARM implementation.
 # error "unsupported architecture"
 
 #endif
+
 
 // ------------------------------------------------------------
 // #-- Triggonometry

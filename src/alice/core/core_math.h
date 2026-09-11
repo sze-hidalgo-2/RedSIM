@@ -23,6 +23,7 @@ global const F64 f64_root_2      = 1.41421356237309504880;
 global const F64 f64_ln_2        = 0.693147180559945309417;
 
 global const F32 f32_noz_epsilon = 1.0e-12f;
+global const F32 f32_limit_epsilon = 1.1920929e-7f;
 
 // ------------------------------------------------------------
 // #-- Integer Packing

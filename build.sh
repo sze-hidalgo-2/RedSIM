@@ -9,11 +9,6 @@ for arg in "$@"; do
   declare $arg='1';
 done
 
-# NOTE(cmat): Generate tags file if ctags is available.
-if command -v ctags &> /dev/null; then
-  ctags -R .
-fi
-
 # NOTE(cmat): Set working directory to the build.sh folder.
 cd "$(dirname "$0")"
 
@@ -107,7 +102,11 @@ compiler_flags+=" -march=native"
 compiler_flags+=" -std=c99"
 # compiler_flags+=" -Wall"
 
+if [[ "$OSTYPE" == "darwin"* ]]; then
+linker_flags+=" -lpthread -lm"
+else
 linker_flags+=" -lnuma -lpthread -lm"
+fi
 
 # NOTE(cmat): Statically link thirdparty dependencies.
 # linker_flags+=" $(realpath ./build/libzoltan.a)"

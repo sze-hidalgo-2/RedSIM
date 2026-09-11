@@ -1,7 +1,11 @@
 #include "alice/core/core_build.h"
 #include "alice/core/core_build.c"
 
+#if OS_LINUX
 #include "alice/linux/linux_system.c"
+#elif OS_MACOS
+#include "alice/macos/macos_system.c"
+#endif
 
 #include "ipc/ipc_build.h"
 #include "ipc/ipc_build.c"
@@ -246,7 +250,9 @@ function void redsim_group_entry(void *user_data) {
   F32 time = 0;
   for Iter_Index(it, 500) {
   // for Iter_Index(it, 1) {
-    F32 time_step = fl_solver_euler_solve(&solver, 0.f);
+    // F32 time_step = fl_solver_euler_solve(&solver, 0.f);
+    // F32 time_step = fl_solver_euler_solve(&solver, 0.f);
+    F32 time_step = fl_solver_euler_solve_implicit(&solver, 0.f);
     time += fl_scale_denormalize_time(&ref_scale, time_step);
 
     // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
