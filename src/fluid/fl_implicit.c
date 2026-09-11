@@ -444,8 +444,8 @@ function F32 fl_solver_euler_solve_implicit(FL_Solver_Euler *euler, F32 time_tar
   // NOTE(cmat): Synchronize all ranks, for more accurate benchmarking.
   ipc_rank_barrier();
 
-  F32 CFL_max     = 10000.0f;// 1000.0f;
-  F32 CFL_growth  = 1.05f;
+  F32 CFL_max     = 1000.0f;
+  F32 CFL_growth  = 1.03f;
 
   // NOTE(cmat): Starting value.
   static F32 CFL  = 0.1f;

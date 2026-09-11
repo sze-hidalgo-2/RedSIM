@@ -97,7 +97,7 @@ function void redsim_group_entry(void *user_data) {
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
-#if 1
+#if 0
   FL_Boundary_Atmospheric atm = {
     .temperature_ground = 291.15f,  // 18 °C — mild summer night
     .pressure_ground    = 94000.f,  // ~940 hPa at Madrid elevation
