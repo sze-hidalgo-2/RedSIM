@@ -510,7 +510,7 @@ function F32 fl_solver_euler_solve_global_step_backward_euler_BDF2_JFNK(FL_Solve
               status);
   }
 
-  euler->has_prev_step = 1;   // from here on, every step uses BDF2
+  euler->has_prev_step = 1;   // from here on, every step uses BDF2 
 
   profiler_end_function();
   return dt;
