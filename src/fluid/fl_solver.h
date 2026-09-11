@@ -1,7 +1,7 @@
 #define NEWTON_GMRES_M       30     // Krylov restart length
 #define NEWTON_GMRES_TOL     1e-2f  // relative — Newton only needs an inexact linear solve
 #define NEWTON_MAX_ITERS     10
-#define NEWTON_TOL           1e-6f  // relative drop in ||N(Q)|| to accept a Newton step
+#define NEWTON_TOL           1e-2f  // relative drop in ||N(Q)|| to accept a Newton step
 
 typedef struct FL_Solver_Euler {
   UG_Mesh            *mesh;
@@ -61,6 +61,10 @@ typedef struct FL_Solver_Euler {
   F32      givens_sn[NEWTON_GMRES_M];
   F32      gmres_g[NEWTON_GMRES_M + 1];
   F32      *reduce_scratch;                      // lane_count()-sized, reused across all reductions
+
+  FL_State flow_0;        // ADD: Q^{n-1}, needed for BDF2
+  B32      has_prev_step; // ADD: false until the first backward-Euler bootstrap step completes
+
 } FL_Solver_Euler;
 
 typedef U32 Time_Step_Mode;

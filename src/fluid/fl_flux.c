@@ -238,6 +238,7 @@ force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive
 
   // NOTE(cmat): Smagorinsky SGS large-eddy viscosity.
   // - We compute the strain-rate tensor S_ij here.
+#if 0
   F32 Sxx = du.x;
   F32 Syy = dv.y;
   F32 Szz = dw.z;
@@ -246,6 +247,24 @@ force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive
   F32 Syz = .5f * (dv.z + dw.y);
   F32 S_mag2 = 2.f * (Sxx*Sxx + Syy*Syy + Szz*Szz) + 4.f * (Sxy*Sxy + Sxz*Sxz + Syz*Syz);
   F32 S_mag  = f32_sqrt(S_mag2);
+
+#else
+  // NOTE(cmat): Smagorinsky SGS large-eddy viscosity.
+  F32 Sxx = du.x;
+  F32 Syy = dv.y;
+  F32 Szz = dw.z;
+  F32 Sxy = .5f * (du.y + dv.x);
+  F32 Sxz = .5f * (du.z + dw.x);
+  F32 Syz = .5f * (dv.z + dw.y);
+  F32 S_mag2 = 2.f * (Sxx*Sxx + Syy*Syy + Szz*Szz) + 4.f * (Sxy*Sxy + Sxz*Sxz + Syz*Syz);
+
+  // EDIT(cmat/jfnk): regularize sqrt() so its derivative stays finite as S_mag2 -> 0.
+  // sqrt(x) has infinite slope at x = 0, which forward-difference JFNK will sample directly
+  // in near-quiescent / near-uniform flow regions. Floor scales with local strain so it
+  // doesn't distort the physical SGS viscosity anywhere the flow is actually straining.
+  F32 S_mag2_floor = 1e-20f * (S_mag2 + 1.f);
+  F32 S_mag        = f32_sqrt(S_mag2 + S_mag2_floor);
+#endif
 
   // NOTE(cmat): We filter width from local cell volume.
   F32 rho_face   = .5f * (left_primitive.x1 + right_primitive.x1);

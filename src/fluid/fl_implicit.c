@@ -196,16 +196,15 @@ function void fl_solver_euler_jacobian_vector_product_global(FL_Solver_Euler *eu
 }
 
 // M^-1 r ~= r / (1/dt + spectral_radius_sum / volume), single global dt.
-function void fl_solver_euler_apply_preconditioner_global(FL_Solver_Euler *euler, FL_State *r, FL_State *z, F32 dt) {
+function void fl_solver_euler_apply_preconditioner_global(FL_Solver_Euler *euler, FL_State *r, FL_State *z, F32 time_coeff) {
   UG_Mesh *mesh = euler->mesh;
-  F32 dt_rcp = 1.f / dt;
   for Iter_Index(it_state, 5) {
     F32 *r_arr = r->states[it_state];
     F32 *z_arr = z->states[it_state];
     for Iter_Range(it, lane_range(mesh->cells.len)) {
       F32 volume   = mesh->cells.volume[it];
       F32 spectral = euler->cell_spectral_inviscid_sum[it] + euler->cell_spectral_viscous_sum[it];
-      F32 diag     = dt_rcp + spectral / volume;
+      F32 diag     = time_coeff + spectral / volume;
       z_arr[it]    = r_arr[it] / diag;
     }
   }
@@ -265,7 +264,7 @@ function void gmres_back_substitute(F32 *H, F32 *g, U32 m_used, F32 *y) {
 
 // Solves A*dQ = b where A(v) = v/dt - Jv(v), right-preconditioned by M^-1 (Section 7).
 // Writes the solution into dQ. Returns the achieved relative residual.
-function F32 fl_solver_euler_gmres_solve_global(FL_Solver_Euler *euler, FL_State *Q0, FL_State *R0, FL_State *b, F32 dt, FL_State *dQ) {
+function F32 fl_solver_euler_gmres_solve_global(FL_Solver_Euler *euler, FL_State *Q0, FL_State *R0, FL_State *b, F32 time_coeff, F32 gmres_tol, FL_State *dQ) {
   profiler_begin_function();
   UG_Mesh *mesh = euler->mesh;
   Range1_U64 range = range1_u64(0, mesh->cells.len);
@@ -290,11 +289,9 @@ function F32 fl_solver_euler_gmres_solve_global(FL_Solver_Euler *euler, FL_State
   for Iter_Index(j, NEWTON_GMRES_M) {
 
     // z = M^-1 V_j  (right preconditioning)
-    fl_solver_euler_apply_preconditioner_global(euler, &euler->krylov_basis[j], &euler->krylov_z, dt);
-
-    // krylov_basis[j+1] = A(z) = z/dt - Jv(z)
+    fl_solver_euler_apply_preconditioner_global(euler, &euler->krylov_basis[j], &euler->krylov_z, time_coeff);
     fl_solver_euler_jacobian_vector_product_global(euler, Q0, R0, &euler->krylov_z, &euler->krylov_basis[j + 1]);
-    fl_state_axpy_in_place(&euler->krylov_basis[j + 1], -1.f, 1.f / dt, &euler->krylov_z, range);
+    fl_state_axpy_in_place(&euler->krylov_basis[j + 1], -1.f, time_coeff, &euler->krylov_z, range);   // CHANGED: was 1.f/dt
 
     // Modified Gram-Schmidt against V_0..V_j
     for Iter_Index(i, j + 1) {
@@ -312,10 +309,17 @@ function F32 fl_solver_euler_gmres_solve_global(FL_Solver_Euler *euler, FL_State
 
     F32 residual_estimate = gmres_apply_givens_and_update(euler->hessenberg, euler->givens_cs, euler->givens_sn, euler->gmres_g, j);
 
+#if 0
     if (residual_estimate / beta < NEWTON_GMRES_TOL || h_next < 1e-30f) {
       m_used = j + 1;
       break;
     }
+#else
+    if (residual_estimate / beta < gmres_tol || h_next < 1e-30f) {
+      m_used = j + 1;
+      break;
+    }
+#endif
   }
 
   F32 y[NEWTON_GMRES_M];
@@ -323,11 +327,22 @@ function F32 fl_solver_euler_gmres_solve_global(FL_Solver_Euler *euler, FL_State
 
   fl_state_zero(dQ, range);
   for Iter_Index(i, m_used) {
-    fl_solver_euler_apply_preconditioner_global(euler, &euler->krylov_basis[i], &euler->krylov_z, dt);
+    fl_solver_euler_apply_preconditioner_global(euler, &euler->krylov_basis[i], &euler->krylov_z, time_coeff);
     fl_state_axpy_in_place(dQ, 1.f, y[i], &euler->krylov_z, range);
   }
 
+#if 0
   F32 relative_residual = euler->gmres_g[m_used] / beta;
+#else
+  F32 relative_residual = f32_abs(euler->gmres_g[m_used] / beta);
+#endif
+ 
+
+  // TODO(cmat): NEW, testing.
+  if (lane_index() == 0) {
+    log_info("    GMRES: %u/%u iters | rel_residual %.3g", m_used, NEWTON_GMRES_M, relative_residual);
+  }
+
   profiler_end_function();
   return relative_residual;
 }
@@ -382,55 +397,120 @@ function F32 fl_solver_euler_compute_max_physical_step(FL_Solver_Euler *euler, F
 // ------------------------------------------------------------
 // #-- Global backward-euler JFNK step
 
-// Same call contract as fl_solver_euler_solve_global_step_SSP_RK_4_3: takes (euler, CFL),
-// advances euler->flow_1 in place by one implicit step, returns the time step taken. Slots
-// directly into the existing loop in fl_solver_euler_solve with no changes to that loop.
-function F32 fl_solver_euler_solve_global_step_backward_euler_JFNK(FL_Solver_Euler *euler, F32 CFL) {
+function F32 fl_solver_euler_solve_global_step_backward_euler_BDF2_JFNK(FL_Solver_Euler *euler, F32 CFL) {
   profiler_begin_function();
   UG_Mesh *mesh = euler->mesh;
   Range1_U64 range = range1_u64(0, mesh->cells.len);
 
+  fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 1);
+  F32 dt = fl_solver_compute_global_time_step(euler, euler->cell_time_step) * CFL;
+
+  // BDF2 time coefficient once we have two prior levels; plain backward Euler
+  // (1st order) to bootstrap the very first step, since BDF2 needs Q^{n-1}.
+  F32 time_coeff = euler->has_prev_step ? (1.5f / dt) : (1.f / dt);
+
+  // Shift history BEFORE overwriting flow_2 — flow_0 becomes the old Q^n (soon to be Q^{n-1}).
+  if (euler->has_prev_step) {
+    fl_state_copy(&euler->flow_0, &euler->flow_2, range);
+  }
+
   // Q^n snapshot — reuse flow_2 the same way the RK(4,3) code uses it as a stage buffer.
   fl_state_copy(&euler->flow_2, &euler->flow_1, range);
 
-  // Global time step from the current state's spectral radii, same routine the explicit
-  // path already uses. Backward Euler is unconditionally stable, so CFL can be ramped far
-  // more aggressively than 0.85 — accuracy, not stability, becomes the limiting factor.
-  fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 1); // fills cell_time_step
-  F32 dt = fl_solver_compute_global_time_step(euler, euler->cell_time_step) * CFL;
+  F32 n0_norm       = 0.f;
+  F32 n_norm        = 0.f;
+  F32 prev_ratio    = 1.f;
+  U32 stagnant_count = 0;
+  U32 k_used        = NEWTON_MAX_ITERS;
+  B32 stagnated     = 0;
 
-  F32 n0_norm = 0.f;
   for Iter_Index(k, NEWTON_MAX_ITERS) {
 
     // True nonlinear residual (limiter recomputed) — used for the convergence check and as
-    // the b-vector's R(Q^k) term. The one full-cost residual call per Newton iteration;
-    // everything inside GMRES below uses the cheap frozen variant (Section 6).
-    fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->newton_residual0, 0);
+    // the b-vector's R(Q^k) term. Also refreshes cell_spectral_*_sum every iteration (fix #2)
+    // so the preconditioner stays current with the Newton iterate.
+    fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->newton_residual0, 1);
 
-    for Iter_Index(it_state, 5) {
-      F32 *r_arr  = euler->newton_residual0.states[it_state];
-      F32 *q_arr  = euler->flow_1.states[it_state];
-      F32 *qn_arr = euler->flow_2.states[it_state];
-      F32 *b_arr  = euler->newton_rhs.states[it_state];
-      for Iter_Range(it, lane_range(mesh->cells.len)) {
-        b_arr[it] = r_arr[it] - (q_arr[it] - qn_arr[it]) / dt;
+    // RHS branches on BDF2 vs bootstrap backward Euler.
+    if (euler->has_prev_step) {
+      for Iter_Index(it_state, 5) {
+        F32 *r_arr    = euler->newton_residual0.states[it_state];
+        F32 *q_arr    = euler->flow_1.states[it_state];
+        F32 *qn_arr   = euler->flow_2.states[it_state];
+        F32 *qnm1_arr = euler->flow_0.states[it_state];
+        F32 *b_arr    = euler->newton_rhs.states[it_state];
+        for Iter_Range(it, lane_range(mesh->cells.len)) {
+          b_arr[it] = r_arr[it] - (1.5f * q_arr[it] - 2.f * qn_arr[it] + 0.5f * qnm1_arr[it]) / dt;
+        }
+      }
+    } else {
+      for Iter_Index(it_state, 5) {
+        F32 *r_arr  = euler->newton_residual0.states[it_state];
+        F32 *q_arr  = euler->flow_1.states[it_state];
+        F32 *qn_arr = euler->flow_2.states[it_state];
+        F32 *b_arr  = euler->newton_rhs.states[it_state];
+        for Iter_Range(it, lane_range(mesh->cells.len)) {
+          b_arr[it] = r_arr[it] - (q_arr[it] - qn_arr[it]) / dt;
+        }
       }
     }
     lane_barrier();
 
-    F32 n_norm = fl_solver_euler_global_norm(euler, &euler->newton_rhs, range);
+    n_norm = fl_solver_euler_global_norm(euler, &euler->newton_rhs, range);
     if (k == 0) {
       n0_norm = n_norm;
     }
-    if (n_norm < NEWTON_TOL * f32_max(n0_norm, 1e-30f)) {
+
+    F32 ratio = n_norm / f32_max(n0_norm, 1e-30f);
+    if (ratio < NEWTON_TOL) {
+      k_used = k;
       break;
     }
 
-    fl_solver_euler_gmres_solve_global(euler, &euler->flow_1, &euler->newton_residual0, &euler->newton_rhs, dt, &euler->newton_dQ);
+    // Stagnation check — if two consecutive iterations each improve the residual ratio
+    // by less than 5%, the Jacobian approximation (F32 finite-difference JVP) has stopped
+    // carrying useful information; further iterations just burn GMRES solves for no benefit.
+    if (k > 0) {
+      F32 improvement = (prev_ratio - ratio) / f32_max(prev_ratio, 1e-30f);
+      if (improvement < 0.05f) {
+        stagnant_count += 1;
+      } else {
+        stagnant_count = 0;
+      }
+      if (stagnant_count >= 2) {
+        k_used    = k;
+        stagnated = 1;
+        break;
+      }
+    }
+    prev_ratio = ratio;
+
+    // Eisenstat-Walker adaptive forcing term. Loose early (fast, cheap GMRES solves while
+    // far from the root), tight later (accurate solves needed to actually approach
+    // NEWTON_TOL) — floored so we're never looser than a sane cap, and never asked to be
+    // more accurate than NEWTON_TOL itself would require anyway.
+    F32 gmres_tol = f32_clamp(0.1f * ratio, NEWTON_TOL, 1e-1f);
+
+    if (lane_index() == 0) {
+      log_info("    Newton k=%u | forcing gmres_tol=%.2g", k, gmres_tol);
+    }
+
+    fl_solver_euler_gmres_solve_global(euler, &euler->flow_1, &euler->newton_residual0, &euler->newton_rhs, time_coeff, gmres_tol, &euler->newton_dQ);
 
     F32 alpha = fl_solver_euler_compute_max_physical_step(euler, &euler->flow_1, &euler->newton_dQ, range);
     fl_state_axpy_in_place(&euler->flow_1, 1.f, alpha, &euler->newton_dQ, range);
   }
+
+  if (lane_index() == 0) {
+    B32 converged = (k_used < NEWTON_MAX_ITERS) && !stagnated;
+    const char *status = converged ? "" : (stagnated ? "  *** STAGNATED (Jacobian noise floor?) ***" : "  *** DID NOT CONVERGE ***");
+    log_info("  Newton: %u/%u iters | residual ratio %.3g%s",
+              k_used, NEWTON_MAX_ITERS,
+              n_norm / f32_max(n0_norm, 1e-30f),
+              status);
+  }
+
+  euler->has_prev_step = 1;   // from here on, every step uses BDF2
 
   profiler_end_function();
   return dt;
@@ -460,7 +540,7 @@ function F32 fl_solver_euler_solve_implicit(FL_Solver_Euler *euler, F32 time_tar
   static V3_F64 residual_norm_first = { 0, 0, 0 };
 
   for Iter_Index(it, 100) {
-    F32 time_step = fl_solver_euler_solve_global_step_backward_euler_JFNK(euler, CFL);
+    F32 time_step = fl_solver_euler_solve_global_step_backward_euler_BDF2_JFNK(euler, CFL);
     time         += time_step;
     iteration    += 1;
 

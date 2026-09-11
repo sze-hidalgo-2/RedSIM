@@ -163,6 +163,7 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
 
   fl_state_init(&euler->flow_1,   material, mesh, 1, arena);
   fl_state_init(&euler->flow_2,   material, mesh, 1, arena);
+  fl_state_init(&euler->flow_0,   material, mesh, 1, arena);   // ADD
   fl_state_init(&euler->residual, material, mesh, 0, arena);
 
   fl_gradient_state_init  (&euler->gradient, mesh, 1, arena);
@@ -269,7 +270,6 @@ function void fl_solver_euler_compute_primitive_range(FL_Solver_Euler *euler, FL
   profiler_end_function();
 }
 
-#if 1
 function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State *state, FL_State *residual, FL_Gradient_State *grad, Range1_U64 range, B32 compute_time_step, F64 *cell_time_step) {
   profiler_begin_function();
 
@@ -406,10 +406,6 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
   lane_barrier();
   profiler_end_function();
 }
-#else
-
-
-#endif
 
 
 function void fl_solver_compute_gradient_range(FL_Solver_Euler *euler, FL_State *state, FL_Gradient_State *gradient, Range1_U64 range) {
