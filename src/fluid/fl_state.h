@@ -12,6 +12,8 @@ typedef struct FL_Material {
   F32   cp;
   F32   visc_coeff;
   F32   smagorinsky_cs2;
+
+  F32   wale_cw;
 } FL_Material;
 
 typedef struct FL_State {

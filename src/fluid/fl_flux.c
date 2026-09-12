@@ -309,3 +309,130 @@ force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive
   flux.lambda_viscous = lambda_visc_face;
   return flux;
 }
+
+force_inline function FL_Flux fl_flux_viscous_wale_LES(V5F left_primitive, V3F left_grad[5], V3F left_center,
+                                                       V5F right_primitive, V3F right_grad[5], V3F right_center,
+                                                       V3F normal, F32 area, F32 left_volume, F32 right_volume, FL_Material *material) {
+
+  V3F center_delta = v3f_sub(right_center, left_center);
+  F32 dist         = v3f_len(center_delta);
+  F32 dist_rcp     = 1.f / dist;
+  V3F e_hat        = v3f_mul(dist_rcp, center_delta);
+
+  V3F left_velocity   = v3f(left_primitive.x2,  left_primitive.x3,  left_primitive.x4);
+  V3F right_velocity  = v3f(right_primitive.x2, right_primitive.x3, right_primitive.x4);
+  V3F face_velocity   = v3f_mul(.5f, v3f_add(left_velocity, right_velocity));
+
+  // NOTE(cmat/wale): Face-averaged velocity gradient tensor, corrected with the exact
+  // directional derivative along the face-normal direction (same treatment as Smagorinsky).
+  V3F du_avg = v3f_mul              (.5f, v3f_add(left_grad[1], right_grad[1]));
+  V3F dv_avg = v3f_mul              (.5f, v3f_add(left_grad[2], right_grad[2]));
+  V3F dw_avg = v3f_mul              (.5f, v3f_add(left_grad[3], right_grad[3]));
+  V3F du     = fl_flux_grad_correct (du_avg, left_velocity.x, right_velocity.x, e_hat, dist_rcp);
+  V3F dv     = fl_flux_grad_correct (dv_avg, left_velocity.y, right_velocity.y, e_hat, dist_rcp);
+  V3F dw     = fl_flux_grad_correct (dw_avg, left_velocity.z, right_velocity.z, e_hat, dist_rcp);
+
+  F32 div_u = du.x + dv.y + dw.z;
+
+  // NOTE(cmat/wale): Full velocity gradient tensor g_ij = d(u_i)/d(x_j).
+  // Row i = velocity component, column j = spatial direction.
+  F32 g11 = du.x, g12 = du.y, g13 = du.z;
+  F32 g21 = dv.x, g22 = dv.y, g23 = dv.z;
+  F32 g31 = dw.x, g32 = dw.y, g33 = dw.z;
+
+  // NOTE(cmat/wale): g^2 = g * g, matrix product (not elementwise).
+  F32 g2_11 = g11*g11 + g12*g21 + g13*g31;
+  F32 g2_12 = g11*g12 + g12*g22 + g13*g32;
+  F32 g2_13 = g11*g13 + g12*g23 + g13*g33;
+  F32 g2_21 = g21*g11 + g22*g21 + g23*g31;
+  F32 g2_22 = g21*g12 + g22*g22 + g23*g32;
+  F32 g2_23 = g21*g13 + g22*g23 + g23*g33;
+  F32 g2_31 = g31*g11 + g32*g21 + g33*g31;
+  F32 g2_32 = g31*g12 + g32*g22 + g33*g32;
+  F32 g2_33 = g31*g13 + g32*g23 + g33*g33;
+
+  F32 trace_g2       = g2_11 + g2_22 + g2_33;
+  F32 trace_g2_third = trace_g2 * (1.f / 3.f);
+
+  // NOTE(cmat/wale): Traceless symmetric part of g^2 — this is S^d_ij.
+  F32 Sd_xx = g2_11 - trace_g2_third;
+  F32 Sd_yy = g2_22 - trace_g2_third;
+  F32 Sd_zz = g2_33 - trace_g2_third;
+  F32 Sd_xy = .5f * (g2_12 + g2_21);
+  F32 Sd_xz = .5f * (g2_13 + g2_31);
+  F32 Sd_yz = .5f * (g2_23 + g2_32);
+
+  F32 SdijSdij = Sd_xx*Sd_xx + Sd_yy*Sd_yy + Sd_zz*Sd_zz
+               + 2.f * (Sd_xy*Sd_xy + Sd_xz*Sd_xz + Sd_yz*Sd_yz);
+
+  // NOTE(cmat/wale): Resolved strain-rate tensor S_ij (plain double-contraction
+  // convention, i.e. S_ij*S_ij with no factor of 2 folded in — this is what
+  // the WALE formula wants, unlike the Smagorinsky |S| convention elsewhere).
+  F32 Sxx = du.x;
+  F32 Syy = dv.y;
+  F32 Szz = dw.z;
+  F32 Sxy = .5f * (du.y + dv.x);
+  F32 Sxz = .5f * (du.z + dw.x);
+  F32 Syz = .5f * (dv.z + dw.y);
+  F32 SijSij = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.f * (Sxy*Sxy + Sxz*Sxz + Syz*Syz);
+
+  // NOTE(cmat/wale): x^1.5, x^2.5, x^1.25 via sqrt products instead of powf —
+  // cheaper, and this is on the residual/JVP hot path (once per face, every
+  // RK stage and every Newton/GMRES Jacobian-vector product).
+  F32 SijSij_sqrt   = f32_sqrt(SijSij);
+  F32 SdijSdij_sqrt = f32_sqrt(SdijSdij);
+  F32 Sd_num = SdijSdij * SdijSdij_sqrt;                     // SdijSdij^1.5
+  F32 S_den  = SijSij * SijSij * SijSij_sqrt;                // SijSij^2.5
+  F32 Sd_den = SdijSdij * f32_sqrt(SdijSdij_sqrt);           // SdijSdij^1.25  (FIXED: was SdijSdij_sqrt * sqrt(SdijSdij_sqrt) = x^0.75)
+
+  // NOTE(cmat/wale): Guards literal 0/0 in perfectly uniform flow. Unlike
+  // Smagorinsky's sqrt(S_mag2) floor, this isn't masking a derivative
+  // singularity — the WALE expression is already C1 down to zero — it's
+  // purely there so JFNK's forward difference never divides by an exact zero.
+  F32 wale_eps = 1e-24f;
+
+  // NOTE(cmat): Filter width from local cell volume, and face density,
+  // matching the Smagorinsky model's convention.
+  F32 rho_face   = .5f * (left_primitive.x1 + right_primitive.x1);
+  F32 volume_avg = .5f * (left_volume + right_volume);
+  F32 delta      = cbrtf(volume_avg);
+
+  F32 nu_t   = (material->wale_cw * material->wale_cw) * (delta * delta) * Sd_num / (S_den + Sd_den + wale_eps);
+  F32 mu_sgs = rho_face * nu_t;
+  F32 mu_eff = material->viscosity_mu + mu_sgs;
+
+  F32 tau_xx = 2.f * mu_eff * du.x - (2.f / 3.f) * mu_eff * div_u;
+  F32 tau_yy = 2.f * mu_eff * dv.y - (2.f / 3.f) * mu_eff * div_u;
+  F32 tau_zz = 2.f * mu_eff * dw.z - (2.f / 3.f) * mu_eff * div_u;
+  F32 tau_xy = mu_eff * (du.y + dv.x);
+  F32 tau_xz = mu_eff * (du.z + dw.x);
+  F32 tau_yz = mu_eff * (dv.z + dw.y);
+  V3F tau_normal = v3f (tau_xx * normal.x + tau_xy * normal.y + tau_xz * normal.z,
+                        tau_xy * normal.x + tau_yy * normal.y + tau_yz * normal.z,
+                        tau_xz * normal.x + tau_yz * normal.y + tau_zz * normal.z);
+
+  F32 left_rho       = left_primitive.x1;
+  F32 right_rho      = right_primitive.x1;
+  F32 left_pressure  = left_primitive.x5;
+  F32 right_pressure = right_primitive.x5;
+  V3F grad_T_l       = v3f_mul(1.f / (left_rho * left_rho * material->gas_constant), v3f_sub(v3f_mul(left_rho, left_grad[4]),  v3f_mul(left_pressure, left_grad[0])));
+  V3F grad_T_r       = v3f_mul(1.f / (right_rho * right_rho * material->gas_constant), v3f_sub(v3f_mul(right_rho, right_grad[4]), v3f_mul(right_pressure, right_grad[0])));
+  F32 T_L            = left_pressure  / (left_rho  * material->gas_constant);
+  F32 T_R            = right_pressure / (right_rho * material->gas_constant);
+  V3F grad_T_avg     = v3f_mul(.5f, v3f_add(grad_T_l, grad_T_r));
+  V3F grad_T_face    = fl_flux_grad_correct (grad_T_avg, T_L, T_R, e_hat, dist_rcp);
+
+  // NOTE(cmat): Effective conductivity = laminar + turbulent (from sgs eddy).
+  F32 k_eff         = material->thermal_conductivity + material->cp * mu_sgs / material->prandtl_turbulent;
+  F32 heat_term     = k_eff * v3f_dot(grad_T_face, normal);
+  F32 work_term     = v3f_dot(tau_normal, face_velocity);
+  V5F viscous_state = v5f(0.f, tau_normal.x, tau_normal.y, tau_normal.z, work_term + heat_term);
+
+  // NOTE(cmat): Stability limit uses mu_eff, since eddy viscosity also diffuses momentum.
+  F32 lambda_visc_face = (mu_eff / rho_face) * material->visc_coeff * (area * area) / volume_avg;
+
+  FL_Flux flux        = { };
+  flux.state          = viscous_state;
+  flux.lambda_viscous = lambda_visc_face;
+  return flux;
+}
