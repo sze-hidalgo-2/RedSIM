@@ -1,4 +1,4 @@
-#define LIMITER_K 3.f
+#define LIMITER_K 5.f
 
 function void fl_solver_euler_halo_state_pack_send_data(FL_Solver_Euler *euler, FL_State *state) {
   profiler_begin_function();
