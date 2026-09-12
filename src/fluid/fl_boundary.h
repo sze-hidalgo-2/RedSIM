@@ -23,6 +23,8 @@ typedef struct FL_Boundary_Atmospheric {
   F32 wind_z0;
   F32 wind_z_ref;
   F32 wind_u_ref;
+
+  F32 wind_z_cap;
 } FL_Boundary_Atmospheric;
 
 typedef struct FL_Boundary_Radiation_Wall {

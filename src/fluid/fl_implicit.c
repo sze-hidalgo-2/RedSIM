@@ -1,3 +1,7 @@
+#define NEWTON_GMRES_TOL     1e-2f  // relative — Newton only needs an inexact linear solve
+#define NEWTON_MAX_ITERS     10
+#define NEWTON_TOL           1e-2f  // relative drop in ||N(Q)|| to accept a Newton step
+
 // ------------------------------------------------------------
 // #-- FL_State as vector helpers
 

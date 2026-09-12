@@ -105,9 +105,10 @@ function void redsim_group_entry(void *user_data) {
     .lapse_rate         = 0.0065f,
     .wind_angle         = f32_pi,
     .wind_d             = 0.f,
-    .wind_z0            = 0.03f,
+    .wind_z0            = 1.5f,
     .wind_z_ref         = 10.f,
     .wind_u_ref         = 2.0f,      // ~7 km/h — light nighttime breeze
+    .wind_z_cap         = 200.f,
   };
 
   FL_Boundary_Radiation_Wall wall = {
@@ -138,9 +139,10 @@ function void redsim_group_entry(void *user_data) {
     .lapse_rate         = 0.0065f,  // standard tropospheric lapse rate, fine for a shallow domain
     .wind_angle         = f32_pi,     // domain-orientation dependent, left as-is
     .wind_d             = 0.f,
-    .wind_z0            = 0.03f,    // open/low-vegetation terrain — bump toward 0.5-1.0 if this is a dense urban domain
+    .wind_z0            = 1.5f,    // open/low-vegetation terrain — bump toward 0.5-1.0 if this is a dense urban domain
     .wind_z_ref         = 10.f,
     .wind_u_ref         = 4.0f,     // ~14 km/h — a light, unremarkable summer breeze
+    .wind_z_cap         = 200.f,
   };
   FL_Boundary_Radiation_Wall wall = {
     .solar_irradiance     = 900.f,    // clear-sky GHI near solar noon at 40.4°N in July
