@@ -121,7 +121,7 @@ function void redsim_group_entry(void *user_data) {
     .cos_zenith           = 0.94f,    // zenith ≈ 19.9° = |lat 40.4° − mid-July declination ~20.5°| at solar noon
     .thermal_conductivity = 0.026f,   // unchanged (this is air's k; currently unused by the equilibrium formula anyway)
     .temperature_min      = 293.15f,  // ~20 °C, typical Madrid summer night low
-    .temperature_max      = 310.0f, // 343.15f,  // ~70 °C, realistic peak for sun-exposed stone/asphalt
+    .temperature_max      = 310.00f,  // ~70 °C, realistic peak for sun-exposed stone/asphalt
     .domain_center        = v3f_mul(.5f, v3f_add(mesh.bounds_global.min, mesh.bounds_global.max)).xy,
     .domain_radius        = v3f_mul(.5f, v3f_sub(mesh.bounds_global.max, mesh.bounds_global.min)).xy,
   };

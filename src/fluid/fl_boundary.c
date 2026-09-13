@@ -19,7 +19,7 @@ force_inline function F32 fl_boundary_atmosphere_density(F32 z, FL_Boundary_Atmo
 }
 force_inline function V3F fl_boundary_atmosphere_velocity(F32 z, FL_Boundary_Atmospheric *atm) {
   V3F result = { };
-  F32 z_capped = f32_min(z, atm->wind_z_cap);   // new field, e.g. top of surface/boundary layer (~200-300m)
+  F32 z_capped = z; // f32_min(z, atm->wind_z_cap);   // new field, e.g. top of surface/boundary layer (~200-300m)
   F32 wind_magnitude = logf(f32_max(z_capped - atm->wind_d, atm->wind_z0) / atm->wind_z0);
   wind_magnitude = f32_div_safe(wind_magnitude, logf((atm->wind_z_ref - atm->wind_d) / atm->wind_z0));
   wind_magnitude = atm->wind_u_ref * wind_magnitude;
@@ -64,7 +64,7 @@ function F32 sdf_rectangle(V2F p, V2F center, V2F half_size) {
 force_inline function F32 fl_boundary_radiation_wall_equilibrium_temperature(FL_Boundary_Radiation_Wall *rad, V3F inner_center, F32 T_air, F32 rho_air, F32 wind_speed, FL_Material *mat) {
   F32 q_solar = fl_boundary_radiation_heat_flux(rad); // W/m^2
 
-  F32 border_distance = sdf_rectangle(inner_center.xy, rad->domain_center, rad->domain_radius);
+  F32 border_distance = -sdf_rectangle(inner_center.xy, rad->domain_center, rad->domain_radius);
   if (border_distance <= .10f * v2f_largest(rad->domain_radius)) {
     q_solar = 0;
   }
