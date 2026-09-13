@@ -97,73 +97,43 @@ function void redsim_group_entry(void *user_data) {
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
-#if 0
   FL_Boundary_Atmospheric atm = {
-    .temperature_ground = 291.15f,  // 18 °C — mild summer night
-    .pressure_ground    = 94000.f,  // ~940 hPa at Madrid elevation
+    .temperature_ground = 306.15f,  // 33 °C — typical Madrid July afternoon high
+    .pressure_ground    = 94000.f,  // ~940 hPa station pressure at Madrid's ~667 m elevation
     .gravity            = 9.81f,
     .lapse_rate         = 0.0065f,
     .wind_angle         = f32_pi,
     .wind_d             = 0.f,
     .wind_z0            = 1.5f,
     .wind_z_ref         = 10.f,
-    .wind_u_ref         = 2.0f,      // ~7 km/h — light nighttime breeze
+    .wind_u_ref         = 4.0f,
     .wind_z_cap         = 200.f,
+
+    .latitude_rad       = 40.4f * (f32_pi / 180.f),  // Madrid
+    .longitude_rad      = -3.7f * (f32_pi / 180.f),
+    .day_of_year        = 200.f,                      // mid-July
   };
 
   FL_Boundary_Radiation_Wall wall = {
-    .solar_irradiance     = 0.f,     // no sun
-    .gamma_coeff          = 0.85f,   // concrete/stone emissivity
-    .albedo               = 0.20f,   // irrelevant with zero solar irradiance
+    .gamma_coeff          = 0.85f,
+    .albedo               = 0.20f,
     .sky_view_factor      = 0.4f,
-    .diffuse_fraction     = 0.f,     // no solar radiation
-    .cos_zenith            = 0.f,     // sun below horizon
+    .diffuse_fraction     = 0.12f,
     .thermal_conductivity = 0.026f,
-
-    .temperature_min      = 285.15f, // 12 °C — cool surface
-    .temperature_max      = 298.15f, // 25 °C — residual heat from daytime
-
-    .domain_center        = v3f_mul(.5f,
-                                    v3f_add(mesh.bounds_global.min,
-                                             mesh.bounds_global.max)).xy,
-    .domain_radius        = v3f_mul(.5f,
-                                     v3f_sub(mesh.bounds_global.max,
-                                             mesh.bounds_global.min)).xy,
-  };
-#else
-  FL_Boundary_Atmospheric atm = {
-    .temperature_ground = 306.15f,  // 33 °C — typical Madrid July afternoon high
-    .pressure_ground    = 94000.f,  // ~940 hPa station pressure at Madrid's ~667 m elevation
-                                     // (NOT sea-level 101325 Pa — Madrid sits high enough that this matters)
-    .gravity            = 9.81f,
-    .lapse_rate         = 0.0065f,  // standard tropospheric lapse rate, fine for a shallow domain
-    .wind_angle         = f32_pi,     // domain-orientation dependent, left as-is
-    .wind_d             = 0.f,
-    .wind_z0            = 1.5f,    // open/low-vegetation terrain — bump toward 0.5-1.0 if this is a dense urban domain
-    .wind_z_ref         = 10.f,
-    .wind_u_ref         = 4.0f,     // ~14 km/h — a light, unremarkable summer breeze
-    .wind_z_cap         = 200.f,
-  };
-  FL_Boundary_Radiation_Wall wall = {
-    .solar_irradiance     = 900.f,    // clear-sky GHI near solar noon at 40.4°N in July
-    .gamma_coeff          = 0.85f,    // concrete/stone emissivity (this field doubles as ε in h_rad,
-                                       // so it needs to be a real material emissivity, not a small
-                                       // ground-heat-flux fraction — 0.35 was too low for that role)
-    .albedo               = 0.20f,    // typical light concrete/stone urban albedo
-    .sky_view_factor      = 0.4f,     // unchanged — depends on your street-canyon/domain geometry
-    .diffuse_fraction     = 0.12f,    // slightly clearer sky than before, still physically typical
-    .cos_zenith           = 0.94f,    // zenith ≈ 19.9° = |lat 40.4° − mid-July declination ~20.5°| at solar noon
-    .thermal_conductivity = 0.026f,   // unchanged (this is air's k; currently unused by the equilibrium formula anyway)
-    .temperature_min      = 293.15f,  // ~20 °C, typical Madrid summer night low
-    .temperature_max      = 343.15f,  // ~70 °C, realistic peak for sun-exposed stone/asphalt
+    .temperature_min      = 293.15f,
+    .temperature_max      = 343.15f,
     .domain_center        = v3f_mul(.5f, v3f_add(mesh.bounds_global.min, mesh.bounds_global.max)).xy,
     .domain_radius        = v3f_mul(.5f, v3f_sub(mesh.bounds_global.max, mesh.bounds_global.min)).xy,
   };
 
-#endif
-
   FL_Material material = {};
   fl_material_init(&material, 1.4f, 1.81e-5f, 0.71f, 287.05f);
+
+  F32 sim_start_hour_utc = 12.f;  // solar noon, approx
+  F32 atm_GHI_measured   = 0.f;
+  F32 atm_rho_air        = 0.f;
+  fl_boundary_conditions_compute_at_time(&atm, &wall, sim_start_hour_utc, &atm_GHI_measured, &atm_rho_air, &material);
+  log_info("Calibrated ABL: u_tau = %.4f m/s | L = %.2f m | T* = %.4f K", atm.wind_u_tau, atm.mo_length, atm.temp_star);
 
   // FL_Boundary_Farfield farfield_old = farfield;
   FL_Material          material_old = material;

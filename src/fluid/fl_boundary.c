@@ -1,12 +1,87 @@
 #include <math.h>
 
+#define FL_VON_KARMAN 0.41f
+
 // ------------------------------------------------------------
 // #-- Atmosphere Farfield Modelling
 
+force_inline function F32 fl_solar_cos_zenith(F32 latitude_rad, F32 day_of_year, F32 hour_utc, F32 longitude_rad) {
+  F32 declination = 0.4093f * sinf(2.f * f32_pi * (284.f + day_of_year) / 365.f);
+  F32 solar_time  = hour_utc + longitude_rad * (180.f / f32_pi) / 15.f;
+  F32 hour_angle  = (solar_time - 12.f) * (f32_pi / 12.f);
+  F32 cos_zenith  = sinf(latitude_rad) * sinf(declination)
+                   + cosf(latitude_rad) * cosf(declination) * cosf(hour_angle);
+  return f32_max(cos_zenith, 0.f);
+}
+
+force_inline function F32 fl_solar_clear_sky_GHI(F32 cos_zenith, F32 solar_constant, F32 transmittance) {
+  F32 result = 0.f;
+  if (cos_zenith > 0.f) {
+    result = solar_constant * cos_zenith * transmittance;
+  }
+  return result;
+}
+
+force_inline function F32 fl_boundary_atmosphere_psi_m(F32 zeta) {
+    F32 result = 0;
+    if (zeta < 0.f) {
+        F32 x = powf(1.f - 16.f * zeta, 0.25f);
+        result = 2.f * logf((1.f + x) * 0.5f)
+               + logf((1.f + x * x) * 0.5f)
+               - 2.f * atanf(x) + (f32_pi * 0.5f);
+    } else {
+        F32 zeta_limited = f32_min(zeta, 1.f);
+        result = -5.f * zeta_limited;
+    }
+    return result;
+}
+
+
+force_inline function F32 fl_boundary_atmosphere_psi_h(F32 zeta) {
+    F32 result = 0;
+    if (zeta < 0.f) {
+        // Unstable: same x as psi_m, different combination
+        F32 x = powf(1.f - 16.f * zeta, 0.25f);
+        result = 2.f * logf((1.f + x * x) * 0.5f);
+    } else {
+        // Stable: Pr_t ~ 1 assumption, same form as psi_m
+        F32 zeta_limited = f32_min(zeta, 1.f);
+        result = -5.f * zeta_limited;
+    }
+
+    return result;
+}
+
+#if 0
 force_inline function F32 fl_boundary_atmosphere_temperature_kelvin(F32 z, FL_Boundary_Atmospheric *atm) {
   F32 result = atm->temperature_ground - atm->lapse_rate * z;
   return result;
 }
+#else
+
+force_inline function F32 fl_boundary_atmosphere_temperature_surface_layer(F32 z, FL_Boundary_Atmospheric *atm) {
+    F32 z_capped = f32_max(z, atm->wind_d + atm->thermal_z0);
+    F32 zeta     = f32_div_safe(z_capped - atm->wind_d, atm->mo_length);
+    F32 psi_h    = fl_boundary_atmosphere_psi_h(zeta);
+    F32 log_term = logf((z_capped - atm->wind_d) / atm->thermal_z0);
+    F32 result   = atm->temperature_ground + (atm->temp_star / FL_VON_KARMAN) * (log_term - psi_h);
+    return result;
+}
+
+force_inline function F32 fl_boundary_atmosphere_temperature_kelvin(F32 z, FL_Boundary_Atmospheric *atm) {
+    F32 result;
+    if (z <= atm->wind_z_cap) {
+        result = fl_boundary_atmosphere_temperature_surface_layer(z, atm);
+    } else {
+        // Above the surface layer: revert to a standard lapse rate,
+        // anchored for continuity at the cap height.
+        F32 T_cap = fl_boundary_atmosphere_temperature_surface_layer(atm->wind_z_cap, atm);
+        result = T_cap - atm->lapse_rate * (z - atm->wind_z_cap);
+    }
+    return result;
+}
+
+#endif
 
 force_inline function F32 fl_boundary_atmosphere_pressure(F32 z, FL_Boundary_Atmospheric *atm, F32 R) {
   F32 result = atm->pressure_ground * powf(1 - (atm->lapse_rate * z) / atm->temperature_ground, atm->gravity / (R * atm->lapse_rate));
@@ -17,6 +92,8 @@ force_inline function F32 fl_boundary_atmosphere_density(F32 z, FL_Boundary_Atmo
   F32 result = fl_boundary_atmosphere_pressure(z, atm, R) / (R * fl_boundary_atmosphere_temperature_kelvin(z, atm));
   return result;
 }
+
+#if 0
 force_inline function V3F fl_boundary_atmosphere_velocity(F32 z, FL_Boundary_Atmospheric *atm) {
   V3F result = { };
   F32 z_capped = f32_min(z, atm->wind_z_cap);   // new field, e.g. top of surface/boundary layer (~200-300m)
@@ -30,13 +107,97 @@ force_inline function V3F fl_boundary_atmosphere_velocity(F32 z, FL_Boundary_Atm
 
   return result;
 }
+#else
+force_inline function V3F fl_boundary_atmosphere_velocity(F32 z, FL_Boundary_Atmospheric *atm) {
+  V3F result = { };
+
+  F32 z_capped = f32_min(z, atm->wind_z_cap);
+  F32 height   = f32_max(z_capped - atm->wind_d, atm->wind_z0);
+  F32 zeta     = f32_div_safe(height, atm->mo_length);
+  F32 psi_m    = fl_boundary_atmosphere_psi_m(zeta);
+
+  F32 wind_magnitude = (atm->wind_u_tau / FL_VON_KARMAN) * (logf(height / atm->wind_z0) - psi_m);
+  wind_magnitude = f32_max(wind_magnitude, 0.f);
+
+  result.x = wind_magnitude * f32_cos(atm->wind_angle);
+  result.y = wind_magnitude * f32_sin(atm->wind_angle);
+  result.z = 0;
+
+  return result;
+}
+function void fl_boundary_atmosphere_calibrate(FL_Boundary_Atmospheric *atm, F32 U_meas, F32 z_meas, F32 T_a, F32 GHI, F32 rho_air, F32 cp_air) {
+  F32 alpha = 0.18f;
+  F32 Bo    = 1.5f;
+
+  F32 H_0 = 0;
+  if (GHI > 10.f) {
+    F32 R_n = (1.f - alpha) * GHI - 100.f;
+    H_0 = ((1.f - 0.15f) * R_n) / (1.f + (1.f / Bo));
+  } else {
+    H_0 = -0.1f * f32_abs(GHI - 100.f);
+  }
+  // NOTE(cmat): preserve sign when clamping away from zero, unlike a naive
+  // abs-clamp — losing the sign here would force every near-neutral case
+  // into the unstable branch regardless of actual day/night conditions.
+  if (f32_abs(H_0) < 0.001f) {
+    H_0 = (H_0 >= 0.f) ? 0.001f : -0.001f;
+  }
+
+  F32 height = f32_max(z_meas - atm->wind_d, atm->wind_z0);
+  F32 psi_m  = 0.f;
+  F32 u_tau  = (U_meas * FL_VON_KARMAN) / logf(height / atm->wind_z0);
+  F32 L      = 1e10f;
+
+  for (int iter = 0; iter < 5; iter += 1) {
+    L = -((u_tau * u_tau * u_tau) * rho_air * cp_air * T_a) / (FL_VON_KARMAN * atm->gravity * H_0);
+
+    F32 zeta = height / L;
+    psi_m = fl_boundary_atmosphere_psi_m(zeta);
+
+    u_tau = (U_meas * FL_VON_KARMAN) / (logf(height / atm->wind_z0) - psi_m);
+  }
+
+  atm->wind_u_tau = u_tau;
+  atm->mo_length  = L;
+  atm->temp_star  = -H_0 / (rho_air * cp_air * u_tau);
+
+  if (atm->thermal_z0 <= 0.f) {
+    atm->thermal_z0 = 0.1f * atm->wind_z0;
+  }
+}
+
+function void fl_boundary_conditions_compute_at_time(
+    FL_Boundary_Atmospheric *atm, FL_Boundary_Radiation_Wall *wall,
+    F32 hour_of_day_utc, F32 *out_GHI_measured, F32 *out_rho_air, FL_Material *material) {
+
+  atm->hour_of_day_utc = hour_of_day_utc;
+
+  F32 cos_zenith = fl_solar_cos_zenith(atm->latitude_rad, atm->day_of_year, hour_of_day_utc, atm->longitude_rad);
+  F32 GHI        = fl_solar_clear_sky_GHI(cos_zenith, 1361.f, 0.75f);
+
+  wall->cos_zenith       = cos_zenith;
+  wall->solar_irradiance = GHI;
+
+  *out_GHI_measured = GHI;
+  *out_rho_air       = atm->pressure_ground / (material->gas_constant_R * atm->temperature_ground);
+
+  fl_boundary_atmosphere_calibrate(atm, atm->wind_u_ref, atm->wind_z_ref, atm->temperature_ground,
+                                    GHI, *out_rho_air, material->gas_constant_R * material->gamma / (material->gamma - 1.f));
+}
+
+
+#endif
 
 force_inline function F32 fl_boundary_radiation_heat_flux(FL_Boundary_Radiation_Wall *rad) {
-  F32 I_diff = rad->diffuse_fraction * rad->solar_irradiance;
-  F32 I_dir  = (rad->solar_irradiance - I_diff * rad->sky_view_factor) / rad->cos_zenith;
-  F32 q_bc   = rad->gamma_coeff * (1.f - rad->albedo) * (I_dir * rad->cos_zenith + I_diff * rad->sky_view_factor);
+  // NOTE(cmat): solar_irradiance is treated as GHI (horizontal), so we split it
+  // directly into horizontal direct + diffuse components — no cos_zenith division
+  // needed (that was only correct if solar_irradiance were DNI).
+  F32 I_diff_h = rad->diffuse_fraction * rad->solar_irradiance;
+  F32 I_dir_h  = rad->solar_irradiance - I_diff_h;
+  F32 q_bc     = rad->gamma_coeff * (1.f - rad->albedo) * (I_dir_h + I_diff_h * rad->sky_view_factor);
   return q_bc;
 }
+
 
 function F32 sdf_rectangle(V2F p, V2F center, V2F half_size) {
     V2F q = v2f_sub(v2f_abs(v2f_sub(p, center)), half_size);
@@ -64,8 +225,10 @@ function F32 sdf_rectangle(V2F p, V2F center, V2F half_size) {
 force_inline function F32 fl_boundary_radiation_wall_equilibrium_temperature(FL_Boundary_Radiation_Wall *rad, V3F inner_center, F32 T_air, F32 rho_air, F32 wind_speed, FL_Material *mat) {
   F32 q_solar = fl_boundary_radiation_heat_flux(rad); // W/m^2
 
-  F32 border_distance = sdf_rectangle(inner_center.xy, rad->domain_center, rad->domain_radius);
-  if (border_distance <= .10f * v2f_largest(rad->domain_radius)) {
+  F32 border_distance   = sdf_rectangle(inner_center.xy, rad->domain_center, rad->domain_radius);
+  F32 dist_to_edge      = -border_distance;              // positive when inside the domain
+  F32 edge_buffer       = 0.10f * v2f_largest(rad->domain_radius);
+  if (dist_to_edge < edge_buffer) {
     q_solar = 0;
   }
 

@@ -456,88 +456,6 @@ function void fl_solver_compute_gradient_range(FL_Solver_Euler *euler, FL_State 
   profiler_end_function();
 }
 
-#if 0
-function void fl_solver_compute_limiter_venkatakrishnan_range(FL_Solver_Euler *euler, FL_State *state, FL_Gradient_State *grad, FL_Limiter_State *limiter, F32 K, Range1_U64 range) {
-  profiler_begin_function();
-
-  U64 range_len = range1_u64_len(range);
-  UG_Mesh *mesh = euler->mesh;
-  for Iter_Range(it_range, lane_range(range_len)) {
-    U64            it_cell  = range.min + it_range;
-    UG_Cell_Faces *faces    = &mesh->cells.faces[it_cell];
-    F32            volume   = mesh->cells.volume[it_cell];
-    F32            eps2     = (K * K * K) * volume;
-
-    // NOTE(cmat): Get primitive state
-    V5F primitive = {
-      .x1 = state->rho[it_cell],
-      .x2 = euler->primitive_v_x[it_cell],
-      .x3 = euler->primitive_v_y[it_cell],
-      .x4 = euler->primitive_v_z[it_cell],
-      .x5 = euler->primitive_pressure[it_cell],
-    };
-
-    // NOTE(cmat): Initialize min/max.
-    V5F primitive_min = { };
-    V5F primitive_max = { };
-    for Iter_Index(it_state, 5) {
-      primitive_min.dat[it_state] = primitive.dat[it_state];
-      primitive_max.dat[it_state] = primitive.dat[it_state];
-    }
-
-    // NOTE(cmat): Update min/max based on neighbour state values.
-    for Iter_Index(it_face, 4) {
-      U32 adjacent = faces->adjacent[it_face];
-      V5F primitive_adjacent = {
-        .x1 = state->rho[adjacent],
-        .x2 = euler->primitive_v_x[adjacent],
-        .x3 = euler->primitive_v_y[adjacent],
-        .x4 = euler->primitive_v_z[adjacent],
-        .x5 = euler->primitive_pressure[adjacent],
-      };
-
-      for Iter_Index(it_state, 5) {
-        primitive_min.dat[it_state] = f32_min(primitive_min.dat[it_state], primitive_adjacent.dat[it_state]);
-        primitive_max.dat[it_state] = f32_max(primitive_max.dat[it_state], primitive_adjacent.dat[it_state]);
-      }
-    }
-
-    // NOTE(cmat): Now that we have the min/max, we apply the venkatakrishnan polynomial expression,
-    // - in order to compute phi for each cell.
-    for Iter_Index(it_state, 5) {
-      V3F cell_grad = v3f(grad->states[it_state].grad_x[it_cell], grad->states[it_state].grad_y[it_cell], grad->states[it_state].grad_z[it_cell]);
-      F32 delta_max = primitive_max.dat[it_state] - primitive.dat[it_state];
-      F32 delta_min = primitive_min.dat[it_state] - primitive.dat[it_state];
-      F32 phi_cell  = 1.f;
-
-      for Iter_Index(it_face, 4) {
-        V3F face_center  = v3f(faces->center_x[it_face], faces->center_y[it_face], faces->center_z[it_face]);
-        V3F center_delta = v3f_sub(face_center, mesh->cells.center[it_cell]);
-        F32 delta_face   = v3f_dot(cell_grad, center_delta);
-        F32 phi_face     = 1.f;
-        F32 vk_epsilon   = 1e-12f;
-        if (delta_face > vk_epsilon || delta_face < -vk_epsilon) {
-          F32 delta_bound     = (delta_face > 0.f) ? delta_max : delta_min;
-          F32 delta_face_rcp  = 1.f / delta_face;
-          F32 y               = delta_bound * delta_face_rcp;
-          F32 eps2_norm       = eps2 * delta_face_rcp * delta_face_rcp;
-          phi_face            = (y * y + 2.f * y + eps2_norm) / (y * y + y + 2.f + eps2_norm);
-        }
-
-        phi_cell = f32_min(phi_cell, phi_face);
-      }
-
-      // NOTE(cmat): Assign phi value to cell.
-      euler->limiter.states[it_state][it_cell] = phi_cell;
-    }
-  }
-
-  lane_barrier();
-  profiler_end_function();
-}
-
-#else
-
 function void fl_solver_compute_limiter_venkatakrishnan_range(FL_Solver_Euler *euler, FL_State *state, FL_Gradient_State *grad, FL_Limiter_State *limiter, F32 K, Range1_U64 range) {
   profiler_begin_function();
   U64 range_len = range1_u64_len(range);
@@ -647,10 +565,6 @@ function void fl_solver_compute_limiter_venkatakrishnan_range(FL_Solver_Euler *e
   lane_barrier();
   profiler_end_function();
 }
-
-
-#endif
-
 
 function F32 fl_solver_compute_global_time_step(FL_Solver_Euler *euler, F64 *time_steps) {
   profiler_begin_function();
