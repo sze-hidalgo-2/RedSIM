@@ -227,7 +227,7 @@ force_inline function F32 fl_boundary_radiation_wall_equilibrium_temperature(FL_
 
   F32 border_distance   = sdf_rectangle(inner_center.xy, rad->domain_center, rad->domain_radius);
   F32 dist_to_edge      = -border_distance;              // positive when inside the domain
-  F32 edge_buffer       = 0.10f * v2f_largest(rad->domain_radius);
+  F32 edge_buffer       = 0.25f * v2f_largest(rad->domain_radius);
   if (dist_to_edge < edge_buffer) {
     q_solar = 0;
   }
