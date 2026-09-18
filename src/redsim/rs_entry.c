@@ -176,7 +176,7 @@ function void redsim_group_entry(void *user_data) {
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 3);
   if (lane_index() == 0) {
-#if 1
+#if 0
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm  };
@@ -215,11 +215,8 @@ function void redsim_group_entry(void *user_data) {
   flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step);
 
   F32 time = 0;
-  for Iter_Index(it, 500) {
-  // for Iter_Index(it, 1) {
-    // F32 time_step = fl_solver_euler_solve(&solver, 0.f);
-    // F32 time_step = fl_solver_euler_solve(&solver, 0.f);
-    F32 time_step = fl_solver_euler_solve_implicit(&solver, 0.f);
+  for Iter_Index(it, 50) {
+    F32 time_step = fl_solver_euler_solve_implicit(&solver, 10.f);
     time += fl_scale_denormalize_time(&ref_scale, time_step);
 
     // NOTE(cmat): Compute current gradient + residual for variables using the gradient.

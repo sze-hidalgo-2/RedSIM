@@ -893,7 +893,7 @@ function void fl_solver_euler_solve_local_step_forward_euler(FL_Solver_Euler *eu
 // Q2 = 2/3 * Q1 + 1/3 * [ Q2 + dt/2 * R(Q2) ]
 // U  = Q2 + dt/2 * R(Q2)
 
-function F64 fl_solver_euler_solve_global_step_SSP_RK_4_3(FL_Solver_Euler *euler, F32 CFL) {
+function F64 fl_solver_euler_solve_global_step_SSP_RK_4_3(FL_Solver_Euler *euler, F32 CFL, F32 max_time_step) {
   profiler_begin_function();
   UG_Mesh  *mesh = euler->mesh;
 
@@ -906,6 +906,8 @@ function F64 fl_solver_euler_solve_global_step_SSP_RK_4_3(FL_Solver_Euler *euler
   // NOTE(cmat): Compute time-step, based on R(Q1)
   F64 time_step = fl_solver_compute_global_time_step(euler, euler->cell_time_step);
   time_step *= CFL;
+
+  time_step = f32_min(time_step, max_time_step);
 
   // NOTE(cmat): Compute Q2 = Q1 + dt/2 * R(Q1)
   fl_solver_global_euler_step(euler, &euler->flow_2, &euler->flow_1, &euler->residual, .5f, time_step);
@@ -985,52 +987,36 @@ function F32 fl_solver_euler_solve(FL_Solver_Euler *euler, F32 time_target) {
   static B32    residual_norm_init  = 0;
   static V3_F64 residual_norm_first = { 0, 0, 0 };
 
-  for Iter_Index(it, 10000) {
-  // for Iter_Index(it, 1000) {
-  // for Iter_Index(it, 64) {
-  // while (time < .2f) {
-    // fl_solver_euler_solve_local_step_forward_euler(euler, CFL);
-    // fl_solver_euler_solve_local_step_SSP_RK_4_3(euler, CFL);
-
-#if 1
-    F64 time_step = fl_solver_euler_solve_global_step_SSP_RK_4_3(euler, CFL);
-#else
-    fl_solver_euler_solve_local_step_SSP_RK_4_3(euler, CFL);
-    F64 time_step = 0;
-#endif
+  while (time < time_target) {
+    F64 max_time_step = time_target - time;
+    F64 time_step     = fl_solver_euler_solve_global_step_SSP_RK_4_3(euler, CFL, max_time_step);
 
     time         += time_step;
     iteration    += 1;
 
-#if 1
-    // if (!residual_norm_init || it == 9999) {
-    if (1) {
+    // NOTE(cmat): Compute current residual.
+    fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 0);
+    
+    // NOTE(cmat): Compute residual norm.
+    V3_F64 residual_norm = fl_solver_euler_compute_state_norm2(euler, &euler->residual, range1_u64(0, euler->mesh->cells.len));
 
-      // NOTE(cmat): Compute current residual.
-      fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 0);
+    if (lane_index() == 0) {
+      residual_norm   = v3_f64_div  (residual_norm, (F64)euler->mesh->cells.len);
+      residual_norm.x = f64_sqrt    (residual_norm.x);
+      residual_norm.y = f64_sqrt    (residual_norm.y);
+      residual_norm.z = f64_sqrt    (residual_norm.z);
       
-      // NOTE(cmat): Compute residual norm.
-      V3_F64 residual_norm = fl_solver_euler_compute_state_norm2(euler, &euler->residual, range1_u64(0, euler->mesh->cells.len));
-
-      if (lane_index() == 0) {
-        residual_norm   = v3_f64_div  (residual_norm, (F64)euler->mesh->cells.len);
-        residual_norm.x = f64_sqrt    (residual_norm.x);
-        residual_norm.y = f64_sqrt    (residual_norm.y);
-        residual_norm.z = f64_sqrt    (residual_norm.z);
-        
-        If_Unlikely (!residual_norm_init) {
-          residual_norm_init = 1;
-          residual_norm_first = residual_norm;
-        }
-
-        residual_norm.x /= residual_norm_first.x;
-        residual_norm.y /= residual_norm_first.y;
-        residual_norm.z /= residual_norm_first.z;
-
-        log_info("TIME %.2g | TIMESTEP %.2g | CFL %.2g | ITERATION %'llu | RESIDUAL %.2g, %.2g, %.2g", time, time_step, CFL, iteration, residual_norm.x, residual_norm.y, residual_norm.z);
+      If_Unlikely (!residual_norm_init) {
+        residual_norm_init = 1;
+        residual_norm_first = residual_norm;
       }
+
+      residual_norm.x /= residual_norm_first.x;
+      residual_norm.y /= residual_norm_first.y;
+      residual_norm.z /= residual_norm_first.z;
+
+      log_info("TIME %.2g | TIMESTEP %.2g | CFL %.2g | ITERATION %'llu | RESIDUAL %.2g, %.2g, %.2g", time, time_step, CFL, iteration, residual_norm.x, residual_norm.y, residual_norm.z);
     }
-#endif
   }
 
   lane_barrier();

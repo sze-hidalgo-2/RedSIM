@@ -1,7 +1,3 @@
-#define NEWTON_GMRES_TOL     1e-2f  // relative — Newton only needs an inexact linear solve
-#define NEWTON_MAX_ITERS     10
-#define NEWTON_TOL           1e-2f  // relative drop in ||N(Q)|| to accept a Newton step
-
 // ------------------------------------------------------------
 // #-- FL_State as vector helpers
 
@@ -401,7 +397,7 @@ function F32 fl_solver_euler_compute_max_physical_step(FL_Solver_Euler *euler, F
 // ------------------------------------------------------------
 // #-- Global backward-euler JFNK step
 
-function F32 fl_solver_euler_solve_global_step_backward_euler_BDF2_JFNK(FL_Solver_Euler *euler, F32 CFL) {
+function F32 fl_solver_euler_solve_global_step_backward_euler_BDF2_JFNK(FL_Solver_Euler *euler, F32 CFL, F32 max_dt) {
   profiler_begin_function();
   UG_Mesh *mesh = euler->mesh;
   Range1_U64 range = range1_u64(0, mesh->cells.len);
@@ -409,9 +405,11 @@ function F32 fl_solver_euler_solve_global_step_backward_euler_BDF2_JFNK(FL_Solve
   fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 1);
   F32 dt = fl_solver_compute_global_time_step(euler, euler->cell_time_step) * CFL;
 
+  dt = f32_min(dt, max_dt);
+
   // BDF2 time coefficient once we have two prior levels; plain backward Euler
   // (1st order) to bootstrap the very first step, since BDF2 needs Q^{n-1}.
-  F32 time_coeff = euler->has_prev_step ? (1.5f / dt) : (1.f / dt);
+  F32 time_coeff = euler->has_prev_step ? f32_div_safe(1.5f, dt) : f32_div_safe(1.f, dt);
 
   // Shift history BEFORE overwriting flow_2 — flow_0 becomes the old Q^n (soon to be Q^{n-1}).
   if (euler->has_prev_step) {
@@ -444,7 +442,7 @@ function F32 fl_solver_euler_solve_global_step_backward_euler_BDF2_JFNK(FL_Solve
         F32 *qnm1_arr = euler->flow_0.states[it_state];
         F32 *b_arr    = euler->newton_rhs.states[it_state];
         for Iter_Range(it, lane_range(mesh->cells.len)) {
-          b_arr[it] = r_arr[it] - (1.5f * q_arr[it] - 2.f * qn_arr[it] + 0.5f * qnm1_arr[it]) / dt;
+          b_arr[it] = r_arr[it] - f32_div_safe((1.5f * q_arr[it] - 2.f * qn_arr[it] + 0.5f * qnm1_arr[it]), dt);
         }
       }
     } else {
@@ -454,7 +452,7 @@ function F32 fl_solver_euler_solve_global_step_backward_euler_BDF2_JFNK(FL_Solve
         F32 *qn_arr = euler->flow_2.states[it_state];
         F32 *b_arr  = euler->newton_rhs.states[it_state];
         for Iter_Range(it, lane_range(mesh->cells.len)) {
-          b_arr[it] = r_arr[it] - (q_arr[it] - qn_arr[it]) / dt;
+          b_arr[it] = r_arr[it] - f32_div_safe(q_arr[it] - qn_arr[it], dt);
         }
       }
     }
@@ -543,10 +541,11 @@ function F32 fl_solver_euler_solve_implicit(FL_Solver_Euler *euler, F32 time_tar
   static B32 residual_norm_init  = 0;
   static V3_F64 residual_norm_first = { 0, 0, 0 };
 
-  for Iter_Index(it, 100) {
-    F32 time_step = fl_solver_euler_solve_global_step_backward_euler_BDF2_JFNK(euler, CFL);
-    time         += time_step;
-    iteration    += 1;
+  while (time < time_target) {
+    F32 max_time_step = time_target - time;
+    F32 time_step     = fl_solver_euler_solve_global_step_backward_euler_BDF2_JFNK(euler, CFL, max_time_step);
+    time             += time_step;
+    iteration        += 1;
 
     if (lane_index() == 0) {
       CFL = f32_min(CFL_max, CFL * CFL_growth);
@@ -554,35 +553,29 @@ function F32 fl_solver_euler_solve_implicit(FL_Solver_Euler *euler, F32 time_tar
 
     lane_broadcast_type(&CFL, 0);
 
-#if 1
-    // if (!residual_norm_init || it == 9999) {
-    if (1) {
+    // NOTE(cmat): Compute current residual.
+    fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 0);
+    
+    // NOTE(cmat): Compute residual norm.
+    V3_F64 residual_norm = fl_solver_euler_compute_state_norm2(euler, &euler->residual, range1_u64(0, euler->mesh->cells.len));
 
-      // NOTE(cmat): Compute current residual.
-      fl_solver_euler_compute_residual(euler, &euler->flow_1, &euler->residual, 0);
+    if (lane_index() == 0) {
+      residual_norm   = v3_f64_div  (residual_norm, (F64)euler->mesh->cells.len);
+      residual_norm.x = f64_sqrt    (residual_norm.x);
+      residual_norm.y = f64_sqrt    (residual_norm.y);
+      residual_norm.z = f64_sqrt    (residual_norm.z);
       
-      // NOTE(cmat): Compute residual norm.
-      V3_F64 residual_norm = fl_solver_euler_compute_state_norm2(euler, &euler->residual, range1_u64(0, euler->mesh->cells.len));
-
-      if (lane_index() == 0) {
-        residual_norm   = v3_f64_div  (residual_norm, (F64)euler->mesh->cells.len);
-        residual_norm.x = f64_sqrt    (residual_norm.x);
-        residual_norm.y = f64_sqrt    (residual_norm.y);
-        residual_norm.z = f64_sqrt    (residual_norm.z);
-        
-        If_Unlikely (!residual_norm_init) {
-          residual_norm_init = 1;
-          residual_norm_first = residual_norm;
-        }
-
-        residual_norm.x /= residual_norm_first.x;
-        residual_norm.y /= residual_norm_first.y;
-        residual_norm.z /= residual_norm_first.z;
-
-        log_info("TIME %.2g | TIMESTEP %.2g | CFL %.2g | ITERATION %'llu | RESIDUAL %.2g, %.2g, %.2g", time, time_step, CFL, iteration, residual_norm.x, residual_norm.y, residual_norm.z);
+      If_Unlikely (!residual_norm_init) {
+        residual_norm_init = 1;
+        residual_norm_first = residual_norm;
       }
+
+      residual_norm.x /= residual_norm_first.x;
+      residual_norm.y /= residual_norm_first.y;
+      residual_norm.z /= residual_norm_first.z;
+
+      log_info("TIME %.2g | TIMESTEP %.2g | CFL %.2g | ITERATION %'llu | RESIDUAL %.2g, %.2g, %.2g", time, time_step, CFL, iteration, residual_norm.x, residual_norm.y, residual_norm.z);
     }
-#endif
   }
 
   lane_barrier();
