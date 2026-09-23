@@ -1,4 +1,4 @@
-#if 1
+#if 0
 #define NEWTON_GMRES_M       30     // Krylov restart length
 #define NEWTON_GMRES_TOL     1e-2f  // relative — Newton only needs an inexact linear solve
 #define NEWTON_MAX_ITERS     10

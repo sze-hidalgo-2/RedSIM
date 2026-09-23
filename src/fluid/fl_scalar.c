@@ -441,10 +441,21 @@ typedef struct FL_Flux_Scalar_Diffusive {
 
 force_inline function FL_Flux_Scalar_Diffusive fl_flux_scalar_diffusive(F32 phi_center_L, F32 phi_center_R, V3F grad_L, V3F grad_R, V3F left_center, V3F right_center, V3F normal, F32 area, F32 left_volume, F32 right_volume, V3F D) {
   FL_Flux_Scalar_Diffusive result = { };
+  // If diffusivity is zero (or effectively zero), the flux is exactly zero
+  // regardless of geometry -- skip the correction algebra entirely instead
+  // of computing it and multiplying by zero. This avoids 0 * Inf -> NaN
+  // when dist collapses near degenerate/immersed-boundary geometry (thin
+  // walls, sharp corners, coincident ghost centers around buildings).
+  F32 D_max = f32_max(f32_max(D.x, D.y), D.z);
+  if (D_max <= 0.f) {
+    return result;
+  }
+
 
   V3F center_delta = v3f_sub(right_center, left_center);
   F32 dist         = v3f_len(center_delta);
-  F32 dist_rcp     = 1.f / dist;
+  // F32 dist_rcp     = 1.f / dist;
+  F32 dist_rcp     = f32_div_safe(1.f, dist);  // was: raw 1.f/dist -- the actual NaN source
   V3F e_hat        = v3f_mul(dist_rcp, center_delta);
 
   V3F grad_avg  = v3f_mul(.5f, v3f_add(grad_L, grad_R));
@@ -455,7 +466,9 @@ force_inline function FL_Flux_Scalar_Diffusive fl_flux_scalar_diffusive(F32 phi_
   result.flux = v3f_dot(diffusive_vec, normal);
 
   F32 volume_avg = .5f * (left_volume + right_volume);
-  F32 D_max      = f32_max(f32_max(D.x, D.y), D.z);
+  // F32 D_max      = f32_max(f32_max(D.x, D.y), D.z);
+  // result.lambda_diffusive = D_max * (area * area) / volume_avg;
+
   result.lambda_diffusive = D_max * (area * area) / volume_avg;
 
   return result;
