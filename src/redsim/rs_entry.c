@@ -231,9 +231,9 @@ function void redsim_group_entry(void *user_data) {
 
   FL_Scalar_Material scalar_material = {};
   fl_scalar_material_init(&scalar_material,
-      fl_scale_normalize_diffusivity(&ref_scale, 0.0f),
-      fl_scale_normalize_diffusivity(&ref_scale, 0.0f),
-      fl_scale_normalize_diffusivity(&ref_scale, 1.0f));
+      fl_scale_normalize_diffusivity(&ref_scale, 0.1f),
+      fl_scale_normalize_diffusivity(&ref_scale, 0.1f),
+      fl_scale_normalize_diffusivity(&ref_scale, 10.0f));
 
   FL_Solver_Scalar scalar_solver = {};
   fl_solver_scalar_init(

@@ -120,13 +120,21 @@ force_inline function F32 fl_scalar_boundary_ghost(FL_Scalar_Boundary_Map *bmap,
     case FL_Scalar_Boundary_Type_Dirichlet: {
       // Mirror trick: ghost chosen so the face midpoint value
       // 0.5*(phi_inner + phi_ghost) equals the Dirichlet value.
+#if 0
       result = 2.f * boundary->dirichlet_value - phi_inner;
+#else
+      result = boundary->dirichlet_value;
+#endif
     } break;
 
     case FL_Scalar_Boundary_Type_Farfield: {
       if (face_normal_velocity < 0.f) {
         // Inflow: ambient concentration is being carried into the domain.
+#if 0
         result = 2.f * boundary->dirichlet_value - phi_inner;
+#else
+        result = boundary->dirichlet_value;
+#endif
       } else {
         // Outflow: let whatever concentration is already inside leave freely.
         result = phi_inner;
