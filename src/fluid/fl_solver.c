@@ -366,8 +366,11 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
       F32 right_volume = mesh->cells.volume[adjacent];
 
       FL_Flux flux_inviscid   = fl_flux_hllc                    (left_state, right_state, normal, state->material.gamma);
-      // FL_Flux flux_viscous    = fl_flux_viscous_smagorinsky_LES (left_primitive, left_grad, cell_center, right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, cell_volume, right_volume, &state->material);
+#if 0
+      FL_Flux flux_viscous    = fl_flux_viscous_smagorinsky_LES (left_primitive, left_grad, cell_center, right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, cell_volume, right_volume, &state->material);
+#else
       FL_Flux flux_viscous    = fl_flux_viscous_wale_LES (left_primitive, left_grad, cell_center, right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, cell_volume, right_volume, &state->material);
+#endif
       V5F     flux_total      = v5f_sub(flux_inviscid.state, flux_viscous.state);
       cell_residual           = v5f_sub(cell_residual, v5f_mul(area, flux_total));
 

@@ -190,6 +190,7 @@ function void flf_ensight_export_init(FLF_Ensight_Export *export, Str08 folder_p
           "GEOMETRY"                                                                                            "\n"
           "model: data/ugrid.geo"                                                                               "\n"
           "VARIABLE"                                                                                            "\n"
+          "scalar per element: 1 phi                    data/cell_phi.bin******"                                "\n"
           "scalar per element: 1 density                data/cell_density.bin******"                            "\n"
           "scalar per element: 1 energy                 data/cell_energy.bin******"                             "\n"
           "scalar per element: 1 pressure               data/cell_pressure.bin******"                           "\n"
@@ -286,7 +287,7 @@ function void flf_ensight_export_cell_variable(FLF_Ensight_Export *export, Str08
   profiler_end_function();
 }
 
-function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scale, F32 time, FL_State *state, FL_Gradient_State *grad, F64 *cell_time_step) {
+function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scale, F32 time, FL_State *state, FL_Gradient_State *grad, F64 *cell_time_step, F32 *phi_scalar) {
   profiler_begin_function();
   Arena_Temp scratch = scratch_start(0);
   log_zone_start("Exporting ensight flow state");
@@ -301,6 +302,12 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scal
   }
 
   lane_broadcast_ptr(&variable_buffer, 0);
+
+  // NOTE(cmat): Phi Scalar
+  for Iter_Range(it, lane_range(cell_count)) {
+    variable_buffer[it] = phi_scalar[it];
+  }
+  flf_ensight_export_cell_variable(export, str08_lit("phi"), 1, variable_buffer);
 
   // NOTE(cmat): Density
   for Iter_Range(it, lane_range(cell_count)) {

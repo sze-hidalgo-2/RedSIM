@@ -19,6 +19,8 @@
 #include "fluid/fl_build.h"
 #include "fluid/fl_build.c"
 
+#include "fluid/fl_scalar.c"
+
 #include "fluid_format/flf_build.h"
 #include "fluid_format/flf_build.c"
 
@@ -176,7 +178,7 @@ function void redsim_group_entry(void *user_data) {
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 3);
   if (lane_index() == 0) {
-#if 0
+#if 1
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm  };
@@ -206,23 +208,85 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Iterate and solve.
   lane_barrier();
 
+
+  // NOTE(cmat): Scalar
+#if 1
+
+  FL_Scalar_Boundary_Map scalar_boundary = {};
+  fl_scalar_boundary_map_init(&scalar_boundary, &permanent_arena, 3);
+
+  if (lane_index() == 0) {
+#if 1
+    *fl_scalar_boundary_map_by_index(&scalar_boundary, 0) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
+    *fl_scalar_boundary_map_by_index(&scalar_boundary, 1) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
+    *fl_scalar_boundary_map_by_index(&scalar_boundary, 2) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Farfield, .dirichlet_value = 1.0f };
+#else
+    *fl_scalar_boundary_map_by_index(&scalar_boundary, 0) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
+    *fl_scalar_boundary_map_by_index(&scalar_boundary, 1) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Farfield, .dirichlet_value = 1.0f };
+    *fl_scalar_boundary_map_by_index(&scalar_boundary, 2) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Farfield, .dirichlet_value = 1.0f };
+#endif
+  }
+
+  lane_barrier();
+
+  FL_Scalar_Material scalar_material = {};
+  fl_scalar_material_init(&scalar_material,
+      fl_scale_normalize_diffusivity(&ref_scale, 0.0f),
+      fl_scale_normalize_diffusivity(&ref_scale, 0.0f),
+      fl_scale_normalize_diffusivity(&ref_scale, 1.0f));
+
+  FL_Solver_Scalar scalar_solver = {};
+  fl_solver_scalar_init(
+    &scalar_solver,
+    &scalar_boundary,
+    scalar_material,
+    &mesh,
+    solver.flow_1.rho_v1,
+    solver.flow_1.rho_v2,
+    solver.flow_1.rho_v3,
+    solver.flow_1.rho,
+    &permanent_arena
+  );
+
+  fl_solver_scalar_set_uniform(&scalar_solver, 0.001f);
+  lane_barrier();
+
+#endif
+
   // NOTE(cmat): Export results.
   FLF_Ensight_Export export = { };
   flf_ensight_export_init(&export, str08_lit("karman"), &mesh, &permanent_arena);
 
   // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
   fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
-  flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step);
+  flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
 
+#if 0
   F32 time = 0;
-  for Iter_Index(it, 50) {
-    F32 time_step = fl_solver_euler_solve_implicit(&solver, 10.f);
+  for Iter_Index(it, 100) {
+    F32 time_step = fl_solver_euler_solve_implicit(&solver, fl_scale_normalize_time(&ref_scale, 100.f));
     time += fl_scale_denormalize_time(&ref_scale, time_step);
 
     // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
     fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
     flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step);
   }
+#else
+  F32 time = 0;
+  for Iter_Index(it, 100) {
+
+    // NOTE(cmat): Exchange halos, fill ghosts, compute gradients. Compute & discard residual for now.
+    fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 0);
+    fl_solver_scalar_solve_implicit(&scalar_solver, fl_scale_normalize_time(&ref_scale, 100.f));
+
+    F32 time_step = fl_solver_euler_solve_implicit(&solver, fl_scale_normalize_time(&ref_scale, 100.f));
+    time += fl_scale_denormalize_time(&ref_scale, time_step);
+
+    // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
+    fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
+    flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
+  }
+#endif
 
   log_zone_end();
   profiler_end_function();
