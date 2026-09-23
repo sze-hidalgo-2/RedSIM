@@ -1,9 +1,32 @@
 // ============================================================================
 // fl_scalar_transport.c
 //
-// Passive scalar transport (advection + anisotropic diffusion) for RedSIM.
+// Passive scalar transport (advection + anisotropic diffusion) for RedSIM,
+// carried by a COMPRESSIBLE velocity field.
 //
-//   d(phi)/dt + div(u * phi) = div(D . grad(phi)),    D = diag(Dx, Dy, Dz)
+//   d(phi)/dt + u . grad(phi) = div(D . grad(phi)),    D = diag(Dx, Dy, Dz)
+//
+// NOTE ON COMPRESSIBILITY (read this before touching the residual kernel):
+// The finite-volume discretization naturally computes div(u*phi) (a
+// conservative flux divergence through the cell's faces), not u.grad(phi).
+// These two only agree when div(u) = 0 (incompressible flow):
+//
+//   div(u*phi) = phi*div(u) + u.grad(phi)
+//
+// Since this solver's velocity field comes from a compressible Euler/NS
+// solver, div(u) is generally NOT zero -- e.g. strongly nonzero at
+// separation/acceleration regions like a bluff body's roof. Left uncorrected,
+// a spatially uniform phi under a uniform boundary value is NOT a steady
+// state: it silently integrates the local velocity divergence into phi
+// every step (phi grows/shrinks wherever the flow is compressing/expanding),
+// even with zero diffusivity and a fully-converged flow field.
+//
+// The fix: accumulate the discrete face-velocity divergence per cell
+// alongside the advective flux, and subtract phi*div(u) back out of the
+// residual so what's actually solved is d(phi)/dt + u.grad(phi) = ...,
+// matching the equation at the top of this file. See
+// fl_solver_scalar_compute_residual_range for the implementation --
+// search for "velocity_divergence_sum".
 //
 // This is a structural mirror of FL_Solver_Euler: same ghost/halo pipeline,
 // same least-squares gradient + Venkatakrishnan limiter, same SSPRK(4,3)
@@ -48,7 +71,7 @@
 // iterations. These defaults are looser than the NS tier on purpose --
 // tighten if your diffusivities are stiff relative to dt.
 
-#define SCALAR_NEWTON_GMRES_M     20     // Krylov restart length
+#define SCALAR_NEWTON_GMRES_M     10     // Krylov restart length
 #define SCALAR_NEWTON_GMRES_TOL   1e-2f  // relative -- inexact linear solve is fine
 #define SCALAR_NEWTON_MAX_ITERS   5
 #define SCALAR_NEWTON_TOL         1e-2f  // relative drop in ||N(phi)|| to accept a Newton step
@@ -118,23 +141,20 @@ force_inline function F32 fl_scalar_boundary_ghost(FL_Scalar_Boundary_Map *bmap,
     } break;
 
     case FL_Scalar_Boundary_Type_Dirichlet: {
-      // Mirror trick: ghost chosen so the face midpoint value
-      // 0.5*(phi_inner + phi_ghost) equals the Dirichlet value.
-#if 0
-      result = 2.f * boundary->dirichlet_value - phi_inner;
-#else
+      // NOTE: ghost carries the boundary value directly. This is what gets
+      // selected as the upwind state on inflow and what feeds the
+      // limiter's neighbor min/max stencil, so it must equal the
+      // physical boundary concentration -- the mirrored/doubled value
+      // (2*value - phi_inner) massively overshoots whenever phi_inner
+      // hasn't caught up to the boundary value yet, which is the common
+      // case (e.g. near t=0, or just downstream of an obstacle's wake).
       result = boundary->dirichlet_value;
-#endif
     } break;
 
     case FL_Scalar_Boundary_Type_Farfield: {
       if (face_normal_velocity < 0.f) {
         // Inflow: ambient concentration is being carried into the domain.
-#if 0
-        result = 2.f * boundary->dirichlet_value - phi_inner;
-#else
         result = boundary->dirichlet_value;
-#endif
       } else {
         // Outflow: let whatever concentration is already inside leave freely.
         result = phi_inner;
@@ -289,8 +309,8 @@ typedef struct FL_Solver_Scalar {
   FL_Scalar_Boundary_Map  *boundary;
 
   // NOTE: aliases into an externally-owned velocity field (typically your NS
-  // solver's primitive_v_x/y/z), sized inner+halo+ghost. This solver only
-  // reads these -- it never writes them, and never advances them in time.
+  // solver's flow_1.rho_v1/2/3 and rho), sized inner+halo+ghost. This solver
+  // only reads these -- it never writes them, and never advances them in time.
   F32 *rho_velocity_x;
   F32 *rho_velocity_y;
   F32 *rho_velocity_z;
@@ -387,7 +407,7 @@ function void fl_scalar_state_axpy_in_place(FL_Scalar_State *dst, F32 alpha, F32
 
 // dst = clamp(alpha*dst + beta*src, lo, hi), per cell.
 //
-// Replaces the old global-alpha physicality limiter: instead of computing one
+// Replaces a global-alpha physicality limiter: instead of computing one
 // mesh-wide step-length scalar that any single near-floor cell can veto for
 // every other cell, this takes the full Newton step everywhere and clips
 // only the cells that actually would have gone out of bounds. phi has no
@@ -428,6 +448,11 @@ function void fl_scalar_state_scale_in_place(FL_Scalar_State *dst, F32 scale, Ra
 typedef struct FL_Flux_Scalar_Advective {
   F32 flux;        // net upwind advective flux, per unit face area
   F32 lambda_max;  // |u.n|, explicit stability estimate
+  F32 vn;          // u.n at the face (signed). Needed to accumulate the
+                    // per-cell face-velocity divergence, which corrects for
+                    // the compressible dilation term div(u*phi) introduces
+                    // but the target equation (u.grad(phi), not div(u*phi))
+                    // does not have. See file header comment.
 } FL_Flux_Scalar_Advective;
 
 force_inline function FL_Flux_Scalar_Advective fl_flux_scalar_advective(F32 phi_face_L, F32 phi_face_R, V3F velocity_L, V3F velocity_R, V3F normal) {
@@ -439,6 +464,7 @@ force_inline function FL_Flux_Scalar_Advective fl_flux_scalar_advective(F32 phi_
 
   result.flux       = vn * phi_upwind;
   result.lambda_max = f32_abs(vn);
+  result.vn         = vn;
   return result;
 }
 
@@ -449,6 +475,7 @@ typedef struct FL_Flux_Scalar_Diffusive {
 
 force_inline function FL_Flux_Scalar_Diffusive fl_flux_scalar_diffusive(F32 phi_center_L, F32 phi_center_R, V3F grad_L, V3F grad_R, V3F left_center, V3F right_center, V3F normal, F32 area, F32 left_volume, F32 right_volume, V3F D) {
   FL_Flux_Scalar_Diffusive result = { };
+
   // If diffusivity is zero (or effectively zero), the flux is exactly zero
   // regardless of geometry -- skip the correction algebra entirely instead
   // of computing it and multiplying by zero. This avoids 0 * Inf -> NaN
@@ -459,11 +486,9 @@ force_inline function FL_Flux_Scalar_Diffusive fl_flux_scalar_diffusive(F32 phi_
     return result;
   }
 
-
   V3F center_delta = v3f_sub(right_center, left_center);
   F32 dist         = v3f_len(center_delta);
-  // F32 dist_rcp     = 1.f / dist;
-  F32 dist_rcp     = f32_div_safe(1.f, dist);  // was: raw 1.f/dist -- the actual NaN source
+  F32 dist_rcp     = f32_div_safe(1.f, dist);  // guards degenerate/immersed-boundary geometry
   V3F e_hat        = v3f_mul(dist_rcp, center_delta);
 
   V3F grad_avg  = v3f_mul(.5f, v3f_add(grad_L, grad_R));
@@ -474,9 +499,6 @@ force_inline function FL_Flux_Scalar_Diffusive fl_flux_scalar_diffusive(F32 phi_
   result.flux = v3f_dot(diffusive_vec, normal);
 
   F32 volume_avg = .5f * (left_volume + right_volume);
-  // F32 D_max      = f32_max(f32_max(D.x, D.y), D.z);
-  // result.lambda_diffusive = D_max * (area * area) / volume_avg;
-
   result.lambda_diffusive = D_max * (area * area) / volume_avg;
 
   return result;
@@ -620,8 +642,8 @@ function void fl_solver_scalar_init_implicit(FL_Solver_Scalar *solver, FL_Scalar
   lane_broadcast_ptr(&solver->reduce_scratch, 0);
 }
 
-// velocity_x/y/z must be sized inner+halo+ghost (same layout as
-// FL_Solver_Euler's primitive_v_x/y/z) and kept alive/updated externally.
+// rho_velocity_x/y/z and rho must be sized inner+halo+ghost (same layout as
+// FL_Solver_Euler's flow_1 state) and kept alive/updated externally.
 function void fl_solver_scalar_init(FL_Solver_Scalar *solver, FL_Scalar_Boundary_Map *boundary, FL_Scalar_Material material, UG_Mesh *mesh, F32 *rho_velocity_x, F32 *rho_velocity_y, F32 *rho_velocity_z, F32 *rho, Arena *arena) {
   Zero_Fill(solver);
 
@@ -818,6 +840,16 @@ function void fl_solver_scalar_compute_residual_range(FL_Solver_Scalar *solver, 
     F32 cell_volume   = mesh->cells.volume[it_cell];
     V3F velocity_left = v3f_mul(f32_div_safe(1.f, solver->rho[it_cell]), v3f(solver->rho_velocity_x[it_cell], solver->rho_velocity_y[it_cell], solver->rho_velocity_z[it_cell]));
 
+    // NOTE(compressibility): discrete divergence of the face-averaged
+    // velocity field through this cell -- sum(area * vn) over the closed
+    // cell boundary. For a truly incompressible field this sums to ~0 and
+    // the correction below is a no-op; for a compressible field (this
+    // solver) it is generally nonzero, and represents exactly the spurious
+    // "phi * div(u)" dilation term that div(u*phi) introduces but the
+    // target equation d(phi)/dt + u.grad(phi) = D*lap(phi) does not have.
+    // See the file header comment for the derivation.
+    F32 velocity_divergence_sum = 0.f;
+
     for Iter_Index(it_face, 4) {
       U32 adjacent    = faces->adjacent[it_face];
       V3F normal      = v3f(faces->normal_x[it_face], faces->normal_y[it_face], faces->normal_z[it_face]);
@@ -856,12 +888,18 @@ function void fl_solver_scalar_compute_residual_range(FL_Solver_Scalar *solver, 
 
       F32 flux_total = flux_adv.flux - flux_diff.flux;
       cell_residual  = cell_residual - area * flux_total;
+      velocity_divergence_sum += area * flux_adv.vn;
 
       if (compute_time_step) {
         solver->cell_spectral_advective_sum[it_cell] += (F64)area * (F64)flux_adv.lambda_max;
         solver->cell_spectral_diffusive_sum[it_cell] += (F64)flux_diff.lambda_diffusive;
       }
     }
+
+    // Cancel the spurious phi*div(u) dilation term picked up by the
+    // conservative flux-divergence discretization: div(u*phi) = phi*div(u)
+    // + u.grad(phi), and only the second piece belongs in this equation.
+    cell_residual = cell_residual + phi_left * velocity_divergence_sum;
 
     F32 volume_rcp = 1.f / cell_volume;
     residual->phi[it_cell] = cell_residual * volume_rcp;
@@ -1114,7 +1152,9 @@ function void fl_solver_scalar_compute_residual_frozen(FL_Solver_Scalar *solver,
 
   // NOTE: solver->gradient / solver->limiter intentionally NOT recomputed here --
   // frozen at the current Newton iterate, same "frozen Jacobian-vector product"
-  // approximation as fl_solver_euler_compute_residual_frozen.
+  // approximation as fl_solver_euler_compute_residual_frozen. The compressibility
+  // correction inside fl_solver_scalar_compute_residual_range is linear in
+  // phi_left, so it differentiates cleanly through the JFNK finite difference.
   fl_solver_scalar_compute_residual_range(solver, state, residual, &solver->gradient, &solver->limiter, mesh->groups.cells_interior, 0);
   fl_solver_scalar_compute_residual_range(solver, state, residual, &solver->gradient, &solver->limiter, mesh->groups.cells_boundary, 0);
 
@@ -1275,29 +1315,6 @@ function F32 fl_solver_scalar_gmres_solve_global(FL_Solver_Scalar *solver, FL_Sc
   return relative_residual;
 }
 
-// Keeps a single Newton step from driving the concentration negative.
-#if 0
-function F32 fl_solver_scalar_compute_max_physical_step(FL_Solver_Scalar *solver, FL_Scalar_State *Q, FL_Scalar_State *dQ, Range1_U64 range) {
-  profiler_begin_function();
-  U64 range_len = range1_u64_len(range);
-
-  F32 lane_alpha = 1.f;
-  for Iter_Range(it_range, lane_range(range_len)) {
-    U64 it = range.min + it_range;
-    F32 phi   = Q->phi[it];
-    F32 d_phi = dQ->phi[it];
-    if (d_phi < 0.f) {
-      lane_alpha = f32_min(lane_alpha, .95f * (-phi / d_phi));
-    }
-  }
-  lane_barrier();
-
-  F32 alpha = fl_solver_scalar_global_min(solver, lane_alpha);
-  profiler_end_function();
-  return f32_clamp(alpha, 1e-4f, 1.f);
-}
-#endif
-
 function F32 fl_solver_scalar_solve_global_step_backward_euler_BDF2_JFNK(FL_Solver_Scalar *solver, F32 CFL, F32 max_dt) {
   profiler_begin_function();
   UG_Mesh *mesh = solver->mesh;
@@ -1381,15 +1398,10 @@ function F32 fl_solver_scalar_solve_global_step_backward_euler_BDF2_JFNK(FL_Solv
 
     fl_solver_scalar_gmres_solve_global(solver, &solver->phi_1, &solver->newton_residual0, &solver->newton_rhs, time_coeff, gmres_tol, &solver->newton_dQ);
 
-#if 0
-    F32 alpha = fl_solver_scalar_compute_max_physical_step(solver, &solver->phi_1, &solver->newton_dQ, range);
-    fl_scalar_state_axpy_in_place(&solver->phi_1, 1.f, alpha, &solver->newton_dQ, range);
-#else
     // Take the full Newton step, clamping only the cells that would go
     // negative. If phi is a bounded fraction in your setup (e.g. [0,1]),
     // change f32_limit_max below to 1.f to also clip overshoot.
-   fl_scalar_state_axpy_clamp_in_place(&solver->phi_1, 1.f, 1.f, &solver->newton_dQ, 0.f, f32_limit_max, range);
-#endif
+    fl_scalar_state_axpy_clamp_in_place(&solver->phi_1, 1.f, 1.f, &solver->newton_dQ, 0.f, f32_limit_max, range);
   }
 
   if (lane_index() == 0) {
