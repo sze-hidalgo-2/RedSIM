@@ -71,11 +71,21 @@
 // iterations. These defaults are looser than the NS tier on purpose --
 // tighten if your diffusivities are stiff relative to dt.
 
+#if 0
 #define SCALAR_NEWTON_GMRES_M     10     // Krylov restart length
 #define SCALAR_NEWTON_GMRES_TOL   1e-2f  // relative -- inexact linear solve is fine
 #define SCALAR_NEWTON_MAX_ITERS   5
 #define SCALAR_NEWTON_TOL         1e-2f  // relative drop in ||N(phi)|| to accept a Newton step
 #define SCALAR_LIMITER_K          5.f
+#else
+
+// TODO(cmat): Experimental
+#define SCALAR_NEWTON_GMRES_M     10     // Krylov restart length
+#define SCALAR_NEWTON_GMRES_TOL   1e-1f  // relative -- inexact linear solve is fine
+#define SCALAR_NEWTON_MAX_ITERS   5
+#define SCALAR_NEWTON_TOL         1e-1f  // relative drop in ||N(phi)|| to accept a Newton step
+#define SCALAR_LIMITER_K          5.f
+#endif
 
 // ------------------------------------------------------------
 // #-- Boundary conditions
@@ -85,11 +95,13 @@ enum {
   FL_Scalar_Boundary_Type_Zero_Gradient,  // no-flux / wall: ghost mirrors inner value
   FL_Scalar_Boundary_Type_Dirichlet,      // fixed value, enforced regardless of flow direction
   FL_Scalar_Boundary_Type_Farfield,       // Dirichlet on inflow, zero-gradient on outflow
+  FL_Scalar_Boundary_Type_Background_Emission,
 };
 
 typedef struct FL_Scalar_Boundary {
   FL_Scalar_Boundary_Type type;
-  F32                      dirichlet_value;
+  F32                     dirichlet_value;
+  F32                     background_emission_max_height;
 } FL_Scalar_Boundary;
 
 typedef struct FL_Scalar_Boundary_Map {
@@ -131,7 +143,7 @@ function FL_Scalar_Boundary *fl_scalar_boundary_map_by_index(FL_Scalar_Boundary_
 // face_normal_velocity is u.n at the boundary face using the mesh's outward
 // normal convention (same sign convention fl_boundary_map_ghost relies on):
 // negative => inflow, positive => outflow.
-force_inline function F32 fl_scalar_boundary_ghost(FL_Scalar_Boundary_Map *bmap, U32 marker_index, F32 phi_inner, F32 face_normal_velocity) {
+force_inline function F32 fl_scalar_boundary_ghost(FL_Scalar_Boundary_Map *bmap, U32 marker_index, F32 phi_inner, F32 face_normal_velocity, V3F ghost_center, FL_Scale *scale) {
   F32 result = phi_inner;
   FL_Scalar_Boundary *boundary = &bmap->map_dat[marker_index];
 
@@ -155,6 +167,22 @@ force_inline function F32 fl_scalar_boundary_ghost(FL_Scalar_Boundary_Map *bmap,
       if (face_normal_velocity < 0.f) {
         // Inflow: ambient concentration is being carried into the domain.
         result = boundary->dirichlet_value;
+      } else {
+        // Outflow: let whatever concentration is already inside leave freely.
+        result = phi_inner;
+      }
+    } break;
+
+    case FL_Scalar_Boundary_Type_Background_Emission: {
+      F32 z = (ghost_center.z * scale->length) + scale->offset.z;
+      if (face_normal_velocity < 0.f) {
+
+        // Outflow: let whatever concentration is already inside leave freely.
+        if (z <= boundary->background_emission_max_height) {
+          result = boundary->dirichlet_value;
+        } else {
+          result = 0;
+        }
       } else {
         // Outflow: let whatever concentration is already inside leave freely.
         result = phi_inner;
@@ -356,6 +384,7 @@ typedef struct FL_Solver_Scalar {
   F32              gmres_g[SCALAR_NEWTON_GMRES_M + 1];
   F32             *reduce_scratch;
 
+  FL_Scale         scale;
 } FL_Solver_Scalar;
 
 // ------------------------------------------------------------
@@ -644,7 +673,7 @@ function void fl_solver_scalar_init_implicit(FL_Solver_Scalar *solver, FL_Scalar
 
 // rho_velocity_x/y/z and rho must be sized inner+halo+ghost (same layout as
 // FL_Solver_Euler's flow_1 state) and kept alive/updated externally.
-function void fl_solver_scalar_init(FL_Solver_Scalar *solver, FL_Scalar_Boundary_Map *boundary, FL_Scalar_Material material, UG_Mesh *mesh, F32 *rho_velocity_x, F32 *rho_velocity_y, F32 *rho_velocity_z, F32 *rho, Arena *arena) {
+function void fl_solver_scalar_init(FL_Solver_Scalar *solver, FL_Scalar_Boundary_Map *boundary, FL_Scalar_Material material, UG_Mesh *mesh, F32 *rho_velocity_x, F32 *rho_velocity_y, F32 *rho_velocity_z, F32 *rho, Arena *arena, FL_Scale scale) {
   Zero_Fill(solver);
 
   solver->mesh       = mesh;
@@ -653,6 +682,7 @@ function void fl_solver_scalar_init(FL_Solver_Scalar *solver, FL_Scalar_Boundary
   solver->rho_velocity_y = rho_velocity_y;
   solver->rho_velocity_z = rho_velocity_z;
   solver->rho            = rho;
+  solver->scale          = scale;
 
   fl_scalar_state_init(&solver->phi_1,    material, mesh, 1, arena);
   fl_scalar_state_init(&solver->phi_2,    material, mesh, 1, arena);
@@ -721,8 +751,10 @@ function void fl_solver_scalar_compute_ghost(FL_Solver_Scalar *solver, FL_Scalar
     V3F velocity = v3f_mul(f32_div_safe(1.f, solver->rho[cell_parent_index]), v3f(solver->rho_velocity_x[cell_parent_index], solver->rho_velocity_y[cell_parent_index], solver->rho_velocity_z[cell_parent_index]));
     F32 vn       = v3f_dot(velocity, normal);
 
+    V3F ghost_center = mesh->cells.center[phi_ghost_index];
+
     F32 phi_inner = state->phi[cell_parent_index];
-    F32 phi_ghost = fl_scalar_boundary_ghost(solver->boundary, marker_index, phi_inner, vn);
+    F32 phi_ghost = fl_scalar_boundary_ghost(solver->boundary, marker_index, phi_inner, vn, ghost_center, &solver->scale);
 
     state->phi[phi_ghost_index] = phi_ghost;
   }
@@ -1315,7 +1347,7 @@ function F32 fl_solver_scalar_gmres_solve_global(FL_Solver_Scalar *solver, FL_Sc
   return relative_residual;
 }
 
-function F32 fl_solver_scalar_solve_global_step_backward_euler_BDF2_JFNK(FL_Solver_Scalar *solver, F32 CFL, F32 max_dt) {
+function F32 fl_solver_scalar_solve_global_step_backward_euler_BDF2_JFNK(FL_Solver_Scalar *solver, F32 CFL, F32 max_dt, B32 *out_converged) {
   profiler_begin_function();
   UG_Mesh *mesh = solver->mesh;
   Range1_U64 range = range1_u64(0, mesh->cells.len);
@@ -1408,7 +1440,10 @@ function F32 fl_solver_scalar_solve_global_step_backward_euler_BDF2_JFNK(FL_Solv
     B32 converged = (k_used < SCALAR_NEWTON_MAX_ITERS) && !stagnated;
     const char *status = converged ? "" : (stagnated ? "  *** STAGNATED ***" : "  *** DID NOT CONVERGE ***");
     log_info("  SCALAR Newton: %u/%u iters | residual ratio %.3g%s", k_used, SCALAR_NEWTON_MAX_ITERS, n_norm / f32_max(n0_norm, 1e-30f), status);
+    *out_converged = converged;
   }
+
+  lane_broadcast_type(out_converged, 0);
 
   solver->has_prev_step = 1;
 
@@ -1422,25 +1457,29 @@ function F32 fl_solver_scalar_solve_implicit(FL_Solver_Scalar *solver, F32 time_
 
   ipc_rank_barrier();
 
-  F32 CFL_max    = 1000.0f;
+  F32 CFL_max    = 10.0f;
   F32 CFL_growth = 1.03f;
+  F32 CFL_min    = 0.05f;
   static F32 CFL = 0.1f;
 
   F64 time      = 0;
   U64 iteration = 0;
 
-  static B32 residual_norm_init  = 0;
-  static F32 residual_norm_first = 0.f;
-
   while (time < time_target) {
     F32 max_time_step = time_target - time;
-    F32 time_step      = fl_solver_scalar_solve_global_step_backward_euler_BDF2_JFNK(solver, CFL, max_time_step);
+    // F32 time_step      = fl_solver_scalar_solve_global_step_backward_euler_BDF2_JFNK(solver, CFL, max_time_step);
+    B32 step_converged = 0;
+
+    F32 time_step      = fl_solver_scalar_solve_global_step_backward_euler_BDF2_JFNK(solver, CFL, max_time_step, &step_converged);
+
     time      += time_step;
     iteration += 1;
 
     if (lane_index() == 0) {
-      CFL = f32_min(CFL_max, CFL * CFL_growth);
+      // CFL = f32_min(CFL_max, CFL * CFL_growth);
+      CFL = step_converged ? f32_min(CFL_max, CFL * CFL_growth) : f32_max(CFL_min, CFL * 0.5f);
     }
+
     lane_broadcast_type(&CFL, 0);
 
     fl_solver_scalar_compute_residual(solver, &solver->phi_1, &solver->residual, 0);
@@ -1448,12 +1487,7 @@ function F32 fl_solver_scalar_solve_implicit(FL_Solver_Scalar *solver, F32 time_
     F32 residual_norm = f32_sqrt(residual_dot / (F32)solver->mesh->cells.len);
 
     if (lane_index() == 0) {
-      If_Unlikely (!residual_norm_init) {
-        residual_norm_init  = 1;
-        residual_norm_first = residual_norm;
-      }
-      F32 residual_norm_rel = residual_norm / f32_max(residual_norm_first, 1e-30f);
-      log_info("SCALAR TIME %.2g | TIMESTEP %.2g | CFL %.2g | ITERATION %'llu | RESIDUAL %.2g", time, time_step, CFL, iteration, residual_norm_rel);
+      log_info("SCALAR TIME %.2g | TIMESTEP %.2g | CFL %.2g | ITERATION %'llu | RESIDUAL %.2g", time, time_step, CFL, iteration, residual_norm);
     }
   }
 

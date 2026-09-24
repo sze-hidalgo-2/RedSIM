@@ -219,7 +219,7 @@ function void redsim_group_entry(void *user_data) {
 #if 1
     *fl_scalar_boundary_map_by_index(&scalar_boundary, 0) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
     *fl_scalar_boundary_map_by_index(&scalar_boundary, 1) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
-    *fl_scalar_boundary_map_by_index(&scalar_boundary, 2) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Farfield, .dirichlet_value = 1.0f };
+    *fl_scalar_boundary_map_by_index(&scalar_boundary, 2) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Background_Emission, .dirichlet_value = 1.0f, .background_emission_max_height = 75.0 };
 #else
     *fl_scalar_boundary_map_by_index(&scalar_boundary, 0) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
     *fl_scalar_boundary_map_by_index(&scalar_boundary, 1) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Farfield, .dirichlet_value = 1.0f };
@@ -231,9 +231,9 @@ function void redsim_group_entry(void *user_data) {
 
   FL_Scalar_Material scalar_material = {};
   fl_scalar_material_init(&scalar_material,
-      fl_scale_normalize_diffusivity(&ref_scale, 0.1f),
-      fl_scale_normalize_diffusivity(&ref_scale, 0.1f),
-      fl_scale_normalize_diffusivity(&ref_scale, 10.0f));
+      fl_scale_normalize_diffusivity(&ref_scale, 0.001f),
+      fl_scale_normalize_diffusivity(&ref_scale, 0.001f),
+      fl_scale_normalize_diffusivity(&ref_scale, 0.001f));
 
   FL_Solver_Scalar scalar_solver = {};
   fl_solver_scalar_init(
@@ -245,9 +245,11 @@ function void redsim_group_entry(void *user_data) {
     solver.flow_1.rho_v2,
     solver.flow_1.rho_v3,
     solver.flow_1.rho,
-    &permanent_arena
+    &permanent_arena,
+    ref_scale
   );
 
+  // fl_solver_scalar_set_uniform(&scalar_solver, 0.001f);
   fl_solver_scalar_set_uniform(&scalar_solver, 0.001f);
   lane_barrier();
 

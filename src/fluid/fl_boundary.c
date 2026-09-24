@@ -64,7 +64,7 @@ function F32 sdf_rectangle(V2F p, V2F center, V2F half_size) {
 force_inline function F32 fl_boundary_radiation_wall_equilibrium_temperature(FL_Boundary_Radiation_Wall *rad, V3F inner_center, F32 T_air, F32 rho_air, F32 wind_speed, FL_Material *mat) {
   F32 q_solar = fl_boundary_radiation_heat_flux(rad); // W/m^2
 
-#if 1
+#if 0
   F32 border_distance = -sdf_rectangle(inner_center.xy, rad->domain_center, rad->domain_radius);
   if (border_distance <= .10f * v2f_largest(rad->domain_radius)) {
     q_solar = 0;
