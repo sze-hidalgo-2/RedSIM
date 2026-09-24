@@ -1476,8 +1476,8 @@ function F32 fl_solver_scalar_solve_implicit(FL_Solver_Scalar *solver, F32 time_
     iteration += 1;
 
     if (lane_index() == 0) {
-      // CFL = f32_min(CFL_max, CFL * CFL_growth);
-      CFL = step_converged ? f32_min(CFL_max, CFL * CFL_growth) : f32_max(CFL_min, CFL * 0.5f);
+      CFL = f32_min(CFL_max, CFL * CFL_growth);
+      // CFL = step_converged ? f32_min(CFL_max, CFL * CFL_growth) : f32_max(CFL_min, CFL * 0.5f);
     }
 
     lane_broadcast_type(&CFL, 0);

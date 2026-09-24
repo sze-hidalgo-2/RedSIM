@@ -178,7 +178,7 @@ function void redsim_group_entry(void *user_data) {
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 3);
   if (lane_index() == 0) {
-#if 0
+#if 1
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm  };
@@ -215,7 +215,7 @@ function void redsim_group_entry(void *user_data) {
   fl_scalar_boundary_map_init(&scalar_boundary, &permanent_arena, 3);
 
   if (lane_index() == 0) {
-#if 0
+#if 1
     *fl_scalar_boundary_map_by_index(&scalar_boundary, 0) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
     *fl_scalar_boundary_map_by_index(&scalar_boundary, 1) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
     *fl_scalar_boundary_map_by_index(&scalar_boundary, 2) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Background_Emission, .dirichlet_value = 1.0f, .background_emission_max_height = 75.0 };
