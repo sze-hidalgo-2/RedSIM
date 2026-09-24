@@ -4,14 +4,8 @@
 #define NEWTON_MAX_ITERS     10
 #define NEWTON_TOL           1e-2f  // relative drop in ||N(Q)|| to accept a Newton step
 
-#elif 0 // NOTE(cmat): Works!
+#else // NOTE(cmat): Works!
 #define NEWTON_GMRES_M       15     // Krylov restart length
-#define NEWTON_GMRES_TOL     1e-2f  // relative — Newton only needs an inexact linear solve
-#define NEWTON_MAX_ITERS     5
-#define NEWTON_TOL           1e-2f  // relative drop in ||N(Q)|| to accept a Newton step
-
-#elif 1 // NOTE(cmat): Experimental 1 - Works
-#define NEWTON_GMRES_M       10    // Krylov restart length
 #define NEWTON_GMRES_TOL     1e-2f  // relative — Newton only needs an inexact linear solve
 #define NEWTON_MAX_ITERS     5
 #define NEWTON_TOL           1e-2f  // relative drop in ||N(Q)|| to accept a Newton step
