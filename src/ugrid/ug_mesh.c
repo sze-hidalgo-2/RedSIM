@@ -1829,3 +1829,166 @@ function U32 ug_mesh_spatial_grid_locate(UG_Mesh *mesh, V3F point) {
 
   return UG_Spatial_Grid_Invalid_Index;
 }
+
+typedef struct UG_Segment_Hit {
+  U32 cell;
+  F32 t_enter;  // Parametric position along A->B where the segment enters this cell, in [0,1].
+  F32 t_exit;   // Parametric position where it exits. (t_exit - t_enter) is the requested "ratio".
+} UG_Segment_Hit;
+
+typedef struct UG_Segment_Trace {
+  U64             len;
+  UG_Segment_Hit *dat;
+} UG_Segment_Trace;
+// ------------------------------------------------------------
+// #-- Segment Trace (spatial-grid entry + face-adjacency walk)
+
+force_inline function B32 ug_segment_clip_to_bounds(V3F a, V3F d, Range3_F32 bounds, F32 *t0, F32 *t1) {
+  F32 tmin = 0.f, tmax = 1.f;
+  for Iter_Index(elem, 3) {
+    F32 origin = a.dat[elem];
+    F32 dir    = d.dat[elem];
+    F32 lo     = bounds.min.dat[elem];
+    F32 hi     = bounds.max.dat[elem];
+
+    if (f32_abs(dir) < 1e-12f) {
+      if (origin < lo || origin > hi) { return 0; }
+    } else {
+      F32 inv = 1.f / dir;
+      F32 t_a = (lo - origin) * inv;
+      F32 t_b = (hi - origin) * inv;
+      if (t_a > t_b) { F32 tmp = t_a; t_a = t_b; t_b = tmp; }
+      tmin = f32_max(tmin, t_a);
+      tmax = f32_min(tmax, t_b);
+      if (tmin > tmax) { return 0; }
+    }
+  }
+  *t0 = tmin;
+  *t1 = tmax;
+  return 1;
+}
+
+// NOTE(cmat): Requires mesh->spatial_grid to already be built (ug_mesh_spatial_grid),
+// - used only to locate the entry cell; the rest of the trace is a pure
+// - face-adjacency walk, so it's exact regardless of grid resolution.
+//
+// NOTE(cmat): Single-lane / serial per call - t is monotonically increasing along
+// - the walk so a cell can never be revisited, and the walk itself is inherently
+// - sequential. To trace many segments (e.g. one per probe), call this once per
+// - segment, distributed across lanes by the caller.
+//
+// NOTE(cmat): The walk stops if it exits through a halo or ghost face - this
+// - partition's mesh has no UG_Cell_Faces for cells >= cells.len, so continuing
+// - would need cross-partition data. The trace naturally terminates there.
+function UG_Segment_Trace ug_mesh_trace_segment(Arena *arena, UG_Mesh *mesh, V3F a, V3F b) {
+  profiler_begin_function();
+  Arena_Temp scratch = scratch_start(arena);
+  UG_Segment_Trace result = {0};
+
+  V3F d       = v3f_sub(b, a);
+  F32 seg_len = v3f_len(d);
+
+  if (seg_len < 1e-9f) {
+    // NOTE(cmat): Degenerate (zero-length) segment - just locate A.
+    U32 cell = ug_mesh_spatial_grid_locate(mesh, a);
+    if (cell != UG_Spatial_Grid_Invalid_Index) {
+      UG_Segment_Hit *hit = arena_push_count(arena, UG_Segment_Hit, 1);
+      *hit = (UG_Segment_Hit) { .cell = cell, .t_enter = 0.f, .t_exit = 1.f };
+      result = (UG_Segment_Trace) { .len = 1, .dat = hit };
+    }
+    scratch_end(&scratch);
+    profiler_end_function();
+    return result;
+  }
+
+  // NOTE(cmat): Clip against the mesh's real domain bounds first, so A/B lying
+  // - outside the mesh entirely don't need special-casing below.
+  Range3_F32 bounds = range3_f32(mesh->spatial_grid.bounds_min, mesh->spatial_grid.bounds_max);
+  F32 t_clip_min, t_clip_max;
+  if (!ug_segment_clip_to_bounds(a, d, bounds, &t_clip_min, &t_clip_max)) {
+    scratch_end(&scratch);
+    profiler_end_function();
+    return result; // NOTE(cmat): Segment never touches the mesh's bounding box.
+  }
+
+  F32 eps = 1e-5f * v3f_largest(v3f_sub(bounds.max, bounds.min));
+
+  // NOTE(cmat): Locate the entry cell. Nudge inward a few times in case
+  // - t_clip_min lands exactly on the boundary (containment / bucket precision).
+  U32 cell    = UG_Spatial_Grid_Invalid_Index;
+  F32 t_start = t_clip_min;
+  {
+    F32 t_try = t_start;
+    for Iter_Index(attempt, 4) {
+      V3F p = v3f_add(a, v3f_mul(t_try, d));
+      cell  = ug_mesh_spatial_grid_locate(mesh, p);
+      if (cell != UG_Spatial_Grid_Invalid_Index) { t_start = t_try; break; }
+      t_try += eps / seg_len;
+      if (t_try > t_clip_max) { break; }
+    }
+  }
+
+  if (cell == UG_Spatial_Grid_Invalid_Index) {
+    scratch_end(&scratch);
+    profiler_end_function();
+    return result; // NOTE(cmat): No entry cell found (e.g. gap in a non-convex domain).
+  }
+
+  // NOTE(cmat): t is monotonically increasing, so no cell repeats -> this bound is safe.
+  UG_Segment_Hit *hits_scratch = arena_push_count(scratch.arena, UG_Segment_Hit, mesh->cells.len);
+  U64             hits_len     = 0;
+
+  F32 t_enter = t_start;
+  F32 t_end   = f32_min(t_clip_max, 1.f);
+
+  for (;;) {
+    Assert(hits_len < mesh->cells.len, "segment trace exceeded cell count - numerical loop?");
+
+    UG_Cell_Faces *faces = &mesh->cells.faces[cell];
+
+    // NOTE(cmat): Exit face = smallest t > t_enter crossing to the *outside*
+    // - of a face (dot(d, normal) > 0). The face we just entered through is
+    // - automatically excluded: its normal, seen from this cell, points the
+    // - opposite way, so dot(d, normal) < 0 for it.
+    F32 t_exit    = t_end;
+    U32 exit_face = UG_Spatial_Grid_Invalid_Index;
+
+    for Iter_Index(it_face, 4) {
+      V3F n     = v3f(faces->normal_x[it_face], faces->normal_y[it_face], faces->normal_z[it_face]);
+      V3F fc    = v3f(faces->center_x[it_face], faces->center_y[it_face], faces->center_z[it_face]);
+      F32 denom = v3f_dot(d, n);
+      if (denom <= 1e-12f) { continue; }
+
+      F32 dist_a = v3f_dot(v3f_sub(a, fc), n);
+      F32 t_hit  = -dist_a / denom;
+
+      if (t_hit > t_enter + 1e-7f && t_hit < t_exit) {
+        t_exit    = t_hit;
+        exit_face = it_face;
+      }
+    }
+
+    hits_scratch[hits_len] = (UG_Segment_Hit) { .cell = cell, .t_enter = t_enter, .t_exit = t_exit };
+    hits_len += 1;
+
+    if (exit_face == UG_Spatial_Grid_Invalid_Index || t_exit >= t_end - 1e-7f) {
+      break; // NOTE(cmat): Reached B (or the domain clip) while still inside this cell.
+    }
+
+    U32 adjacent = faces->adjacent[exit_face];
+    if (adjacent >= mesh->cells.len) {
+      break; // NOTE(cmat): Exited through a halo/ghost face - stop here.
+    }
+
+    cell    = adjacent;
+    t_enter = t_exit;
+  }
+
+  result.len = hits_len;
+  result.dat = arena_push_count(arena, UG_Segment_Hit, hits_len);
+  memory_copy(result.dat, hits_scratch, hits_len * sizeof(UG_Segment_Hit));
+
+  scratch_end(&scratch);
+  profiler_end_function();
+  return result;
+}

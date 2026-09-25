@@ -24,9 +24,6 @@
 #include "fluid_format/flf_build.h"
 #include "fluid_format/flf_build.c"
 
-#include "rs_emission.h"
-#include "rs_emission.c"
-
 function void redsim_group_entry(void *user_data) {
   profiler_begin_function();
   log_zone_start("Thread Group Entry");
@@ -183,9 +180,14 @@ function void redsim_group_entry(void *user_data) {
   log_info("Initializing boundary");
   fl_boundary_map_init(&boundary, &permanent_arena, 3);
   if (lane_index() == 0) {
+#if 1
     *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
     *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm  };
+#else
+    *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall  };
+    *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm   };
+#endif
   }
 
   // NOTE(cmat): Init solver.
@@ -215,9 +217,14 @@ function void redsim_group_entry(void *user_data) {
   fl_scalar_boundary_map_init(&scalar_boundary, &permanent_arena, 3);
 
   if (lane_index() == 0) {
+#if 1
     *fl_scalar_boundary_map_by_index(&scalar_boundary, 0) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
     *fl_scalar_boundary_map_by_index(&scalar_boundary, 1) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
-    *fl_scalar_boundary_map_by_index(&scalar_boundary, 2) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Background_Emission, .dirichlet_value = 0.0f, .background_emission_max_height = 75.f };
+    *fl_scalar_boundary_map_by_index(&scalar_boundary, 2) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Background_Emission, .dirichlet_value = 1.f, .background_emission_max_height = 75.f };
+#else
+    *fl_scalar_boundary_map_by_index(&scalar_boundary, 0) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Zero_Gradient };
+    *fl_scalar_boundary_map_by_index(&scalar_boundary, 1) = (FL_Scalar_Boundary) { .type = FL_Scalar_Boundary_Type_Background_Emission, .dirichlet_value = 1.f, .background_emission_max_height = 75.f };
+#endif
   }
 
   lane_barrier();
@@ -248,10 +255,12 @@ function void redsim_group_entry(void *user_data) {
 
 #endif
 
-  // NOTE(cmat): Load traffic-emission line sources from CSV (x0,y0,x1,y1,value_1,value_2).
-  // - 0.2f: release height above the road surface, matching the old single-point example.
-  // - Loads on lane 0 and broadcasts internally, so this is safe to call from every lane.
-  CSV_Emission_Line_Array emission_lines = csv_emission_lines_load(&permanent_arena, str08_lit("Traffic_Emissions_2014.csv"), 0.5f);
+  // NOTE(cmat): Locate point.
+  V3F source_point = v3f(0, 0, 0.2f);
+  source_point     = v3f_mul(f32_div_safe(1.f, ref_scale.length), v3f_sub(source_point, ref_scale.offset));
+
+  log_info("%f %f %f", V3_Expand(source_point));
+  U32 cell_location = ug_mesh_spatial_grid_locate(&mesh, source_point);
 
   F32 *scalar_emission = 0;
   if (lane_index() == 0) {
@@ -264,31 +273,12 @@ function void redsim_group_entry(void *user_data) {
   }
   lane_barrier();
 
-  // NOTE(cmat): Trace every line through the mesh and spread its value_1 across the
-  // - cells it crosses, weighted by (t_exit - t_enter) so each line's total contribution
-  // - sums back to value_1. Done single-threaded on lane 0, same as the CSV load above -
-  // - scalar_emission is shared (broadcast above), so accumulating from multiple lanes
-  // - here without atomics would race.
-  if (lane_index() == 0) {
-    U32 lines_missed = 0;
-    for Iter_Index(it_line, emission_lines.len) {
-      CSV_Emission_Line *line = &emission_lines.dat[it_line];
-
-      V3F a = v3f_mul(f32_div_safe(1.f, ref_scale.length), v3f_sub(v3f_sub(line->a, v3f(441918, 4474610, 0)), ref_scale.offset));
-      V3F b = v3f_mul(f32_div_safe(1.f, ref_scale.length), v3f_sub(v3f_sub(line->b, v3f(441918, 4474610, 0)), ref_scale.offset));
-
-      UG_Segment_Trace trace = ug_mesh_trace_segment(&permanent_arena, &mesh, a, b);
-      if (trace.len == 0) { lines_missed += 1; continue; }
-
-      for Iter_Index(it_hit, trace.len) {
-        UG_Segment_Hit *hit    = &trace.dat[it_hit];
-        F32             weight = hit->t_exit - hit->t_enter; // NOTE(cmat): fraction of the line inside this cell.
-        scalar_emission[hit->cell] += line->value_1 * weight;
-      }
-    }
-    log_info("emission lines: %llu loaded, %u missed the mesh entirely", emission_lines.len, lines_missed);
+  if (cell_location != UG_Spatial_Grid_Invalid_Index) {
+    log_info("found -> %u", cell_location);
+    scalar_emission[cell_location] = 500.f;  // kg/s -- tune to whatever injection rate you want
+  } else {
+    log_info("failed to find");
   }
-  lane_barrier();
 
   fl_solver_scalar_source_set(&scalar_solver, scalar_emission);
 
@@ -415,3 +405,4 @@ link_function void sys_entry_point(void) {
   // NOTE(cmat): Shutdown IPC.
   ipc_shutdown();
 }
+
