@@ -1573,3 +1573,259 @@ function void ug_mesh_reorder_by_groups(UG_Mesh *mesh) {
   profiler_end_function();
 }
 
+// ------------------------------------------------------------
+// #-- Spatial Grid
+
+#pragma pack(push, 1)
+  typedef struct UG_Spatial_Grid_Entry {
+    U32 bucket;
+    U32 cell;
+  } UG_Spatial_Grid_Entry;
+#pragma pack(pop)
+
+Assert_Compiler(sizeof(UG_Spatial_Grid_Entry) == 2 * sizeof(U32));
+
+// NOTE: Six times the signed volume of tetrahedron (a,b,c,d). Sign encodes orientation.
+force_inline function F32 ug_tetra_orient(V3F a, V3F b, V3F c, V3F d) {
+  return v3f_dot(v3f_sub(a, d), v3f_cross(v3f_sub(b, d), v3f_sub(c, d)));
+}
+
+force_inline function B32 ug_tetra_contains_point(UG_Grid *grid, U32 it_cell, V3F p) {
+  V4U v = grid->elems.verts[it_cell];
+  V3F a = v3f(grid->verts.x[v.x], grid->verts.y[v.x], grid->verts.z[v.x]);
+  V3F b = v3f(grid->verts.x[v.y], grid->verts.y[v.y], grid->verts.z[v.y]);
+  V3F c = v3f(grid->verts.x[v.z], grid->verts.y[v.z], grid->verts.z[v.z]);
+  V3F d = v3f(grid->verts.x[v.w], grid->verts.y[v.w], grid->verts.z[v.w]);
+
+  F32 vol = ug_tetra_orient(a, b, c, d);
+  F32 eps = 1e-6f * f32_abs(vol);
+
+  F32 s0 = ug_tetra_orient(p, b, c, d);
+  F32 s1 = ug_tetra_orient(a, p, c, d);
+  F32 s2 = ug_tetra_orient(a, b, p, d);
+  F32 s3 = ug_tetra_orient(a, b, c, p);
+
+  B32 inside = (vol >= 0.f)
+    ? (s0 >= -eps && s1 >= -eps && s2 >= -eps && s3 >= -eps)
+    : (s0 <=  eps && s1 <=  eps && s2 <=  eps && s3 <=  eps);
+
+  return inside;
+}
+
+force_inline function void ug_spatial_grid_cell_bounds(UG_Grid *grid, U32 it_cell, V3F *out_min, V3F *out_max) {
+  V4U v = grid->elems.verts[it_cell];
+  V3F a = v3f(grid->verts.x[v.x], grid->verts.y[v.x], grid->verts.z[v.x]);
+  V3F b = v3f(grid->verts.x[v.y], grid->verts.y[v.y], grid->verts.z[v.y]);
+  V3F c = v3f(grid->verts.x[v.z], grid->verts.y[v.z], grid->verts.z[v.z]);
+  V3F d = v3f(grid->verts.x[v.w], grid->verts.y[v.w], grid->verts.z[v.w]);
+
+  V3F cell_min, cell_max;
+  for Iter_Index(elem, 3) {
+    cell_min.dat[elem] = f32_min(f32_min(a.dat[elem], b.dat[elem]), f32_min(c.dat[elem], d.dat[elem]));
+    cell_max.dat[elem] = f32_max(f32_max(a.dat[elem], b.dat[elem]), f32_max(c.dat[elem], d.dat[elem]));
+  }
+
+  *out_min = cell_min;
+  *out_max = cell_max;
+}
+
+force_inline function V3U ug_spatial_grid_bucket_index(UG_Spatial_Grid *sgrid, V3F point) {
+  V3F frac = v3f_had(v3f_sub(point, sgrid->bounds_min), sgrid->cell_size_rcp);
+
+  V3U idx;
+  for Iter_Index(elem, 3) {
+    F32 fc = frac.dat[elem];
+    fc = f32_max(fc, 0.f);
+    fc = f32_min(fc, (F32)(sgrid->resolution - 1));
+    idx.dat[elem] = (U32)fc; // NOTE: truncation == floor, fc is non-negative here.
+  }
+
+  return idx;
+}
+
+force_inline function void ug_spatial_grid_cell_bucket_range(UG_Spatial_Grid *sgrid, UG_Grid *grid, U32 it_cell, V3U *out_min, V3U *out_max) {
+  V3F cell_min, cell_max;
+  ug_spatial_grid_cell_bounds(grid, it_cell, &cell_min, &cell_max);
+  *out_min = ug_spatial_grid_bucket_index(sgrid, cell_min);
+  *out_max = ug_spatial_grid_bucket_index(sgrid, cell_max);
+}
+
+force_inline function U64 ug_spatial_grid_bucket_flatten(UG_Spatial_Grid *sgrid, U32 ix, U32 iy, U32 iz) {
+  return (U64)ix + (U64)sgrid->resolution * ((U64)iy + (U64)sgrid->resolution * (U64)iz);
+}
+
+function void ug_mesh_spatial_grid(Arena *arena, UG_Mesh *mesh, U32 resolution) {
+  profiler_begin_function();
+  Arena_Temp scratch = scratch_start(arena);
+  log_zone_start("Building spatial grid (resolution %u)", resolution);
+
+  Assert(resolution > 0, "resolution must be non-zero");
+
+  UG_Grid          *grid  = &mesh->grid;
+  UG_Spatial_Grid  *sgrid = &mesh->spatial_grid;
+
+  sgrid->resolution    = resolution;
+  sgrid->bounds_min    = mesh->bounds_global.min;
+  sgrid->bounds_max    = mesh->bounds_global.max;
+  sgrid->cell_size     = v3f_mul(1.f / (F32)resolution, range3_f32_len(mesh->bounds_global));
+  sgrid->cell_size_rcp = v3f_rcp(sgrid->cell_size);
+  sgrid->bucket_len    = (U64)resolution * (U64)resolution * (U64)resolution;
+
+  Assert(sgrid->bucket_len <= 0xFFFFFFFFull, "resolution too large: bucket index must fit in U32");
+
+  if (lane_index() == 0) {
+    sgrid->bucket_range = arena_push_count(arena, Range1_U64, sgrid->bucket_len); // NOTE: zero-filled -> empty ranges.
+  }
+  lane_broadcast_ptr(&sgrid->bucket_range, 0);
+
+  // NOTE: Pass 1 - count how many buckets each cell's AABB overlaps.
+  U32 *overlap_count = 0;
+  U64 *lane_total    = 0;
+  if (lane_index() == 0) {
+    overlap_count = arena_push_count(scratch.arena, U32, mesh->cells.len);
+    lane_total    = arena_push_count(scratch.arena, U64, lane_count());
+  }
+  lane_broadcast_ptr(&overlap_count, 0);
+  lane_broadcast_ptr(&lane_total,    0);
+
+  log_info("Counting bucket overlaps");
+  for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
+    V3U bucket_min, bucket_max;
+    ug_spatial_grid_cell_bucket_range(sgrid, grid, it_cell, &bucket_min, &bucket_max);
+
+    U32 count = (bucket_max.x - bucket_min.x + 1)
+              * (bucket_max.y - bucket_min.y + 1)
+              * (bucket_max.z - bucket_min.z + 1);
+
+    overlap_count[it_cell]    = count;
+    lane_total[lane_index()] += count;
+  }
+
+  lane_barrier();
+
+  // NOTE: Reduce total entry count and build an exclusive prefix sum per cell,
+  // - so pass 3 can write into the pairs array without any lane needing to
+  // - coordinate with any other.
+  U64  total_pairs = 0;
+  U64 *cell_offset  = 0;
+  if (lane_index() == 0) {
+    cell_offset = arena_push_count(scratch.arena, U64, mesh->cells.len);
+
+    U64 running = 0;
+    for Iter_Index(it, mesh->cells.len) {
+      cell_offset[it] = running;
+      running += overlap_count[it];
+    }
+    total_pairs = running;
+
+    for Iter_Index(it, lane_count()) { /* unused, kept for symmetry with other passes */ }
+  }
+  lane_broadcast_u64(&total_pairs, 0);
+  lane_broadcast_ptr(&cell_offset, 0);
+  log_info("Total bucket entries: %'llu", total_pairs);
+
+  UG_Spatial_Grid_Entry *pairs = 0;
+  if (lane_index() == 0) {
+    pairs = arena_push_count(scratch.arena, UG_Spatial_Grid_Entry, total_pairs);
+  }
+  lane_broadcast_ptr(&pairs, 0);
+
+  // NOTE: Pass 3 - recompute the same overlap ranges and write (bucket, cell) pairs.
+  log_info("Writing bucket entries");
+  for Iter_Range(it_cell, lane_range(mesh->cells.len)) {
+    V3U bucket_min, bucket_max;
+    ug_spatial_grid_cell_bucket_range(sgrid, grid, it_cell, &bucket_min, &bucket_max);
+
+    U64 write_at = cell_offset[it_cell];
+    for (U32 iz = bucket_min.z; iz <= bucket_max.z; iz += 1) {
+    for (U32 iy = bucket_min.y; iy <= bucket_max.y; iy += 1) {
+    for (U32 ix = bucket_min.x; ix <= bucket_max.x; ix += 1) {
+      pairs[write_at].bucket = (U32)ug_spatial_grid_bucket_flatten(sgrid, ix, iy, iz);
+      pairs[write_at].cell   = it_cell;
+      write_at += 1;
+    }}}
+  }
+
+  // NOTE: Sort by bucket so each bucket's entries are contiguous.
+  lane_barrier();
+  log_info("Sorting bucket entries");
+  array_sort_radix_u32(total_pairs, 2, 0, (U32 *)pairs);
+
+  // NOTE: Build CSR ranges from the sorted, contiguous runs.
+  lane_barrier();
+  if (lane_index() == 0) {
+    for Iter_Index(it, total_pairs) {
+      U32 bucket = pairs[it].bucket;
+      Range1_U64 *range = &sgrid->bucket_range[bucket];
+      if (range->min == range->max) { range->min = it; }
+      range->max = it + 1;
+    }
+  }
+
+  // NOTE: Copy out just the cell indices, in final sorted order.
+  lane_barrier();
+  if (lane_index() == 0) {
+    sgrid->cell_dat_len = total_pairs;
+    sgrid->cell_dat     = arena_push_count(arena, U32, total_pairs);
+  }
+  lane_broadcast_u64(&sgrid->cell_dat_len, 0);
+  lane_broadcast_ptr(&sgrid->cell_dat,     0);
+
+  for Iter_Range(it, lane_range(total_pairs)) {
+    sgrid->cell_dat[it] = pairs[it].cell;
+  }
+
+  lane_barrier();
+  log_zone_end();
+  scratch_end(&scratch);
+  profiler_end_function();
+}
+
+function U32 ug_mesh_spatial_grid_locate(UG_Mesh *mesh, V3F point) {
+  UG_Spatial_Grid *sgrid = &mesh->spatial_grid;
+  UG_Grid         *grid  = &mesh->grid;
+
+  // NOTE: Fast reject - outside the mesh's overall domain.
+  for Iter_Index(elem, 3) {
+    if (point.dat[elem] < sgrid->bounds_min.dat[elem] || point.dat[elem] > sgrid->bounds_max.dat[elem]) {
+      return UG_Spatial_Grid_Invalid_Index;
+    }
+  }
+
+  V3U idx    = ug_spatial_grid_bucket_index(sgrid, point);
+  U64 bucket = ug_spatial_grid_bucket_flatten(sgrid, idx.x, idx.y, idx.z);
+
+  // NOTE: Every cell whose AABB contains this point was binned into this exact
+  // - bucket at build time, so this is sufficient in the general case - no
+  // - neighbor search needed.
+  Range1_U64 range = sgrid->bucket_range[bucket];
+  for Iter_Range(it, range) {
+    U32 cell = sgrid->cell_dat[it];
+    if (ug_tetra_contains_point(grid, cell, point)) { return cell; }
+  }
+
+  // NOTE: Fallback for floating point edge cases exactly on a bucket boundary -
+  // - probe the 26 neighbors before giving up.
+  for (I32 dz = -1; dz <= 1; dz += 1) {
+  for (I32 dy = -1; dy <= 1; dy += 1) {
+  for (I32 dx = -1; dx <= 1; dx += 1) {
+    if (dx == 0 && dy == 0 && dz == 0) { continue; }
+
+    I32 nx = (I32)idx.x + dx;
+    I32 ny = (I32)idx.y + dy;
+    I32 nz = (I32)idx.z + dz;
+    if (nx < 0 || ny < 0 || nz < 0)                                        { continue; }
+    if (nx >= (I32)sgrid->resolution || ny >= (I32)sgrid->resolution ||
+        nz >= (I32)sgrid->resolution)                                      { continue; }
+
+    U64 neighbor_bucket       = ug_spatial_grid_bucket_flatten(sgrid, (U32)nx, (U32)ny, (U32)nz);
+    Range1_U64 neighbor_range = sgrid->bucket_range[neighbor_bucket];
+
+    for Iter_Range(it, neighbor_range) {
+      U32 cell = sgrid->cell_dat[it];
+      if (ug_tetra_contains_point(grid, cell, point)) { return cell; }
+    }
+  }}}
+
+  return UG_Spatial_Grid_Invalid_Index;
+}

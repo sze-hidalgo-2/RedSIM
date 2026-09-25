@@ -329,6 +329,19 @@ function F32 fl_scale_denormalize_diffusivity(FL_Scale *scale, F32 diffusivity) 
   return result;
 }
 
+// A source_mass_rate (kg/s) injected uniformly into a cell of volume
+// cell_volume (non-dim) contributes source_mass_rate/cell_volume_dim to
+// d(phi)/dt_dim. Converting to non-dim time (t_nd = t_dim * a_ref/L_ref)
+// and non-dim volume (V_dim = V_nd * L_ref^3) gives:
+//
+//   source_nd = source_mass_rate / (V_nd * L_ref^2 * a_ref)
+//
+function F32 fl_scale_normalize_source_rate(FL_Scale *scale, F32 source_mass_rate, F32 cell_volume) {
+  F32 volume_rcp = f32_div_safe(1.f, cell_volume);
+  F32 result = source_mass_rate * volume_rcp * f32_div_safe(1.f, scale->length * scale->length * scale->sound_speed);
+  return result;
+}
+
 // ------------------------------------------------------------
 // #-- Solver
 
@@ -383,6 +396,9 @@ typedef struct FL_Solver_Scalar {
   F32              givens_sn[SCALAR_NEWTON_GMRES_M];
   F32              gmres_g[SCALAR_NEWTON_GMRES_M + 1];
   F32             *reduce_scratch;
+
+
+  F32 *source;
 
   FL_Scale         scale;
 } FL_Solver_Scalar;
@@ -671,6 +687,20 @@ function void fl_solver_scalar_init_implicit(FL_Solver_Scalar *solver, FL_Scalar
   lane_broadcast_ptr(&solver->reduce_scratch, 0);
 }
 
+function void fl_solver_scalar_source_init(FL_Solver_Scalar *solver, UG_Mesh *mesh, Arena *arena) {
+  F32 *source_dat = 0;
+  if (lane_index() == 0) {
+    source_dat = arena_push_count(arena, F32, mesh->cells.len);
+  }
+  lane_broadcast_ptr(&source_dat, 0);
+  solver->source = source_dat;
+
+  for Iter_Range(it, lane_range(mesh->cells.len)) {
+    solver->source[it] = 0.f;
+  }
+  lane_barrier();
+}
+
 // rho_velocity_x/y/z and rho must be sized inner+halo+ghost (same layout as
 // FL_Solver_Euler's flow_1 state) and kept alive/updated externally.
 function void fl_solver_scalar_init(FL_Solver_Scalar *solver, FL_Scalar_Boundary_Map *boundary, FL_Scalar_Material material, UG_Mesh *mesh, F32 *rho_velocity_x, F32 *rho_velocity_y, F32 *rho_velocity_z, F32 *rho, Arena *arena, FL_Scale scale) {
@@ -724,6 +754,41 @@ function void fl_solver_scalar_init(FL_Solver_Scalar *solver, FL_Scalar_Boundary
   fl_solver_scalar_halo_gradient_limiter_build_request_list  (solver);
 
   fl_solver_scalar_init_implicit(solver, material, mesh, arena);
+
+
+  // NEW: allocate + zero solver->source, sized mesh->cells.len.
+  fl_solver_scalar_source_init(solver, mesh, arena);
+}
+
+// ------------------------------------------------------------
+// #-- Source term
+
+
+function void fl_solver_scalar_source_set_zero(FL_Solver_Scalar *solver) {
+  for Iter_Range(it, lane_range(solver->mesh->cells.len)) {
+    solver->source[it] = 0.f;
+  }
+  lane_barrier();
+}
+
+// source_mass_rate_kg_s must be an array of length mesh->cells.len (one
+// entry per inner cell, in the same cell ordering as everything else).
+// Units: kg/s -- the total mass of the transported quantity injected into
+// that cell per second (negative = sink/removal). This does the
+// non-dimensionalization once and caches the result in solver->source, so
+// you only need to call it again when the emission rates actually change
+// (e.g. a time-varying schedule), not on every residual evaluation.
+function void fl_solver_scalar_source_set(FL_Solver_Scalar *solver, F32 *source_mass_rate_kg_s) {
+  profiler_begin_function();
+  UG_Mesh *mesh = solver->mesh;
+
+  for Iter_Range(it, lane_range(mesh->cells.len)) {
+    F32 cell_volume = mesh->cells.volume[it];
+    solver->source[it] = fl_scale_normalize_source_rate(&solver->scale, source_mass_rate_kg_s[it], cell_volume);
+  }
+
+  lane_barrier();
+  profiler_end_function();
 }
 
 // Convenience: seed phi_1 / phi_2 / phi_0 all to the same uniform value.
@@ -934,7 +999,7 @@ function void fl_solver_scalar_compute_residual_range(FL_Solver_Scalar *solver, 
     cell_residual = cell_residual + phi_left * velocity_divergence_sum;
 
     F32 volume_rcp = 1.f / cell_volume;
-    residual->phi[it_cell] = cell_residual * volume_rcp;
+    residual->phi[it_cell] = cell_residual * volume_rcp + solver->source[it_cell];
 
     if (compute_time_step) {
       solver->cell_time_step[it_cell] = (F64)cell_volume / (solver->cell_spectral_advective_sum[it_cell] + solver->cell_spectral_diffusive_sum[it_cell]);

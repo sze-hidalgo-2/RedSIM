@@ -69,6 +69,20 @@ typedef struct UG_Groups {
   Range1_U64 cells_boundary;
 } UG_Groups;
 
+typedef struct UG_Spatial_Grid {
+  U32          resolution;     // NOTE: Buckets per axis (resolution^3 buckets total).
+  V3F          bounds_min;
+  V3F          bounds_max;
+  V3F          cell_size;
+  V3F          cell_size_rcp;
+  U64          bucket_len;     // NOTE: resolution^3
+  Range1_U64  *bucket_range;   // [bucket_len]  CSR ranges into cell_dat.
+  U64          cell_dat_len;
+  U32         *cell_dat;       // NOTE: Flattened (possibly duplicated) cell indices per bucket.
+} UG_Spatial_Grid;
+
+#define UG_Spatial_Grid_Invalid_Index ((U32)-1)
+
 typedef struct UG_Mesh {
   Range3_F32    bounds; // TODO(cmat): Rename to center_bounds_local, move to UG_Cells.
   Range3_F32    bounds_global;
@@ -78,6 +92,7 @@ typedef struct UG_Mesh {
   UG_Sends      sends;
   UG_Ghosts     ghosts;
   UG_Groups     groups;
+  UG_Spatial_Grid spatial_grid;
 } UG_Mesh;
 
 typedef struct UG_Mesh_Array {
@@ -98,3 +113,5 @@ function void     ug_mesh_array_from_partition        (UG_Mesh_Array *mesh_array
 function void     ug_mesh_ipc_distribute              (UG_Mesh_Array *mesh_array);
 function void     ug_mesh_ipc_receive                 (Arena *arena, UG_Mesh *mesh, U32 rank);
 
+function void ug_mesh_spatial_grid        (Arena *arena, UG_Mesh *mesh, U32 resolution);
+function U32  ug_mesh_spatial_grid_locate (UG_Mesh *mesh, V3F point);

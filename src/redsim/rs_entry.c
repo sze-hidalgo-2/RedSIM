@@ -96,6 +96,8 @@ function void redsim_group_entry(void *user_data) {
   ug_mesh_optimize_reorder(&mesh, mesh.groups.cells_interior);
   ug_mesh_optimize_reorder(&mesh, mesh.groups.cells_boundary);
 
+  ug_mesh_spatial_grid(&permanent_arena, &mesh, 100);
+
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
@@ -252,6 +254,33 @@ function void redsim_group_entry(void *user_data) {
   lane_barrier();
 
 #endif
+
+  // NOTE(cmat): Locate point.
+  V3F source_point = v3f(0, 0, 0.2f);
+  source_point     = v3f_mul(f32_div_safe(1.f, ref_scale.length), v3f_sub(source_point, ref_scale.offset));
+
+  log_info("%f %f %f", V3_Expand(source_point));
+  U32 cell_location = ug_mesh_spatial_grid_locate(&mesh, source_point);
+
+  F32 *scalar_emission = 0;
+  if (lane_index() == 0) {
+    scalar_emission = arena_push_count(&permanent_arena, F32, mesh.cells.len);
+  }
+  lane_broadcast_ptr(&scalar_emission, 0);
+
+  for Iter_Range(it, lane_range(mesh.cells.len)) {
+    scalar_emission[it] = 0.f;
+  }
+  lane_barrier();
+
+  if (cell_location != UG_Spatial_Grid_Invalid_Index) {
+    log_info("found -> %u", cell_location);
+    scalar_emission[cell_location] = 0.1f;  // kg/s -- tune to whatever injection rate you want
+  } else {
+    log_info("failed to find");
+  }
+
+  fl_solver_scalar_source_set(&scalar_solver, scalar_emission);
 
   // NOTE(cmat): Export results.
   FLF_Ensight_Export export = { };
