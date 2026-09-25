@@ -273,7 +273,7 @@ function void redsim_group_entry(void *user_data) {
   }
 #else
   F32 time = 0;
-  for Iter_Index(it, 300) {
+  for Iter_Index(it, 300) { // 300, 10
     // NOTE(cmat): Exchange halos, fill ghosts, compute gradients. Compute & discard residual for now.
     fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 0);
     fl_solver_scalar_solve_implicit(&scalar_solver, fl_scale_normalize_time(&ref_scale, 10.f));
