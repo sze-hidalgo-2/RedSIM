@@ -238,6 +238,7 @@ link_function void sys_file_close(SYS_File *file) {
 }
 
 // TODO(cmat): Page alignment fix.
+#if 0
 link_function SYS_File_Map sys_file_map(SYS_File *file, Range1_U64 range) {
   Linux_Handle_Node *handle = linux_handle_from_sys_handle(file, SYS_Handle_Type_File);
   I32 file_handle           = handle->value.file;
@@ -256,6 +257,35 @@ link_function SYS_File_Map sys_file_map(SYS_File *file, Range1_U64 range) {
 
   return map;
 }
+
+#else
+link_function SYS_File_Map sys_file_map(SYS_File *file, Range1_U64 range) {
+  Linux_Handle_Node *handle = linux_handle_from_sys_handle(file, SYS_Handle_Type_File);
+  I32 file_handle           = handle->value.file;
+
+  U64 bytes          = range1_u64_len(range);
+  U64 offset         = range.min;
+  U64 page_size      = sys_context()->mmu_page_bytes;
+  U64 offset_aligned = (offset / page_size) * page_size;
+  U64 offset_remainder = offset - offset_aligned;
+  U64 map_bytes      = bytes + offset_remainder;
+
+  U08 *address = mmap(0, map_bytes, PROT_READ, MAP_PRIVATE,
+                      file_handle, offset_aligned);
+
+  if (address == MAP_FAILED) {
+    sys_panic(str08_lit("file mmap failed"));
+  }
+
+  SYS_File_Map map = {
+    .map_full  = str08(map_bytes, address),
+    .map_range = str08(bytes, address + offset_remainder),
+  };
+
+  return map;
+}
+
+#endif
 
 link_function void sys_file_unmap(SYS_File_Map *map) {
   munmap(map->map_full.txt, map->map_full.len);

@@ -296,7 +296,7 @@ function void redsim_group_entry(void *user_data) {
   // - (Traffic_Emission_2014_NOX_ratios.csv). Row 0 must line up with the simulation's
   // - start date/hour (2014;11;6;Thursday;0), one row per hour with no gaps - so `time`
   // - (elapsed simulated seconds, accumulated in the loop below) indexes straight into it.
-  RS_NOX_Ratio_Table nox_ratios = rs_nox_ratio_table_load(&permanent_arena, str08_lit("madrid/Traffic_Emission_2014_NOX_ratios.csv"));
+  RS_NOX_Ratio_Table nox_ratios = rs_nox_ratio_table_load(&permanent_arena, str08_lit("madrid/Traffic_Emissions_2014_NOX_ratios.csv"));
 
   // NOTE(cmat): emission_scale = day_weight * emission_const. Split out so day_weight can
   // - be re-looked-up from nox_ratios every step as simulated time advances.

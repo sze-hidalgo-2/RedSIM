@@ -1,3 +1,23 @@
+// NOTE(cmat): Reads the raw text of one CSV field, up to (not including) the next ';', a
+// - line ending, or EOF. Unlike scan_identifier, this doesn't restrict itself to
+// - alpha/digit/'_' - some AEMET-style CSVs mark public holidays as e.g. "Monday (PH)" in
+// - the day-of-week column, which scan_identifier can't fully consume (it stops at the
+// - space): the scan cursor would then stall on '(' for the rest of the row, since scan_u64
+// - and scan_f64 fail *without* advancing on an unexpected leading character, cascading into
+// - a wall of parse errors and aborting the whole table load early. Since this field is only
+// - kept for logging/sanity checks (see the header comment), reading it as opaque text
+// - sidesteps the whole problem.
+function Str08 rs_nox_scan_field_raw(Scan *scan) {
+  U64 start = scan->at;
+  for (;;) {
+    U08 c = scan_char(scan);
+    if (c == ';' || c == '\r' || c == '\n' || c == 0) { break; }
+    scan_move(scan, 1);
+  }
+
+  return str08_slice(scan->stream, start, scan->at - start);
+}
+
 function RS_NOX_Ratio_Table rs_nox_ratio_table_load(Arena *arena, Str08 file_path) {
   profiler_begin_function();
   log_zone_start("Loading NOx ratio CSV: \"%S\"", file_path);
@@ -45,7 +65,7 @@ function RS_NOX_Ratio_Table rs_nox_ratio_table_load(Arena *arena, Str08 file_pat
             U64   year    = scan_u64(&scan);        scan_require(&scan, str08_lit(";"));
             U64   month   = scan_u64(&scan);        scan_require(&scan, str08_lit(";"));
             U64   day     = scan_u64(&scan);        scan_require(&scan, str08_lit(";"));
-            Str08 weekday = scan_identifier(&scan); scan_require(&scan, str08_lit(";"));
+            Str08 weekday = rs_nox_scan_field_raw(&scan); scan_require(&scan, str08_lit(";"));
             U64   hour    = scan_u64(&scan);        scan_require(&scan, str08_lit(";"));
             F64   period  = scan_f64(&scan);        scan_require(&scan, str08_lit(";"));
             F64   annual  = scan_f64(&scan);

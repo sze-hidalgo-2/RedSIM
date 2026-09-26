@@ -5,6 +5,231 @@
 // ------------------------------------------------------------
 // #-- CSV Loaders
 
+// NOTE(cmat): Peeks (without consuming) whether the field at the scan's current position is
+// - empty - i.e. the next non-space/tab byte is the ';' delimiter, a line ending, or EOF.
+// - Deliberately does NOT use scan_skip_whitespace/scan_char, since those treat '\r'/'\n' as
+// - ordinary whitespace: calling scan_f64 on an empty *last* field of a line would silently
+// - skip across the line ending and start parsing the *next* row's data as this field's
+// - value, desynchronizing every row after it (and eventually crashing str08_slice once the
+// - scan runs off the end of the file). Checking this first, before ever calling scan_f64,
+// - avoids that path entirely.
+function B32 rs_meteo_field_is_empty(Scan *scan) {
+  U64 at = scan->at;
+  while (at < scan->stream.len && (scan->stream.txt[at] == ' ' || scan->stream.txt[at] == '\t')) {
+    at += 1;
+  }
+
+  U08 c = (at < scan->stream.len) ? scan->stream.txt[at] : 0;
+  B32 result = (c == ';' || c == '\r' || c == '\n' || c == 0);
+  return result;
+}
+
+// NOTE(cmat): Attempts to parse one F64 field (e.g. a single hourly reading in a meteo CSV
+// - row). Station data occasionally has missing readings, which show up as an empty CSV cell.
+// - On a missing or malformed field this logs a warning with the offending line/column,
+// - reports the field as invalid via `out_valid`, and returns 0.0 as a placeholder - the
+// - caller fills the placeholder in properly afterwards via linear/circular interpolation
+// - against the table's other readings, so a handful of bad/missing readings degrade
+// - gracefully instead of aborting the whole table load.
+function F64 rs_meteo_scan_f64_optional(Scan *scan, B32 *out_valid, Str08 file_path, Str08 field_name) {
+  *out_valid = 1;
+
+  if (rs_meteo_field_is_empty(scan)) {
+    *out_valid = 0;
+    log_warning("%S: %llu:%llu: missing value for %S, will interpolate", file_path, scan->line_at, scan->char_at, field_name);
+    return 0.0;
+  }
+
+  Scan_Error *error_first_before = scan->error_first;
+  Scan_Error *error_last_before  = scan->error_last;
+  U64         line_at            = scan->line_at;
+  U64         char_at            = scan->char_at;
+
+  F64 result = scan_f64(scan);
+
+  if (scan->error_last != error_last_before) {
+    // NOTE(cmat): scan_f64's failure branch pushes exactly one error - roll it back off
+    // - the list so it doesn't get treated as a real parse failure by the caller.
+    scan->error_first = error_first_before;
+    scan->error_last  = error_last_before;
+    if (scan->error_last) {
+      scan->error_last->next = 0;
+    }
+
+    *out_valid = 0;
+    log_warning("%S: %llu:%llu: invalid value for %S, will interpolate", file_path, line_at, char_at, field_name);
+    result = 0.0;
+  }
+
+  return result;
+}
+
+// NOTE(cmat): Fills gaps (runs of `valid[i] == 0`) in a table's `global_radiation_w_m2`
+// - series by linearly interpolating between the nearest valid reading before and after the
+// - gap - treating the whole table as one flat chronological sequence of `len * 24` hourly
+// - values, so a gap that straddles midnight (last hour of one day, first hours of the next)
+// - is interpolated correctly instead of per-day in isolation. A gap with no valid reading on
+// - one side (the very start/end of the record) holds the nearest available value instead.
+function void rs_meteo_radiation_interpolate_gaps(RS_Meteo_Radiation_Table *table, B32 *valid, Str08 file_path) {
+  U64 count  = table->len * 24;
+  U64 filled = 0;
+  U64 i      = 0;
+
+  while (i < count) {
+    if (valid[i]) { i += 1; continue; }
+
+    U64 gap_start = i;
+    U64 gap_end   = i;
+    while (gap_end < count && !valid[gap_end]) { gap_end += 1; }
+
+    B32 has_left  = gap_start > 0;
+    B32 has_right = gap_end < count;
+    F64 left_val  = has_left  ? table->dat[(gap_start - 1) / 24].global_radiation_w_m2[(gap_start - 1) % 24] : 0.0;
+    F64 right_val = has_right ? table->dat[gap_end / 24].global_radiation_w_m2[gap_end % 24]                 : 0.0;
+
+    for (U64 k = gap_start; k < gap_end; k += 1) {
+      F64 v;
+      if      (has_left && has_right) { F64 t = (F64)(k - gap_start + 1) / (F64)(gap_end - gap_start + 1); v = left_val + (right_val - left_val) * t; }
+      else if (has_left)              { v = left_val; }
+      else if (has_right)             { v = right_val; }
+      else                            { v = 0.0; }
+
+      table->dat[k / 24].global_radiation_w_m2[k % 24] = v;
+    }
+
+    filled += (gap_end - gap_start);
+    i       = gap_end;
+  }
+
+  if (filled > 0) {
+    log_warning("%S: linearly interpolated %llu missing global_radiation_w_m2 reading(s)", file_path, filled);
+  }
+}
+
+// NOTE(cmat): Same gap-filling scheme as rs_meteo_radiation_interpolate_gaps, applied to
+// - `temperature_c`.
+function void rs_meteo_temperature_interpolate_gaps(RS_Meteo_Temperature_Table *table, B32 *valid, Str08 file_path) {
+  U64 count  = table->len * 24;
+  U64 filled = 0;
+  U64 i      = 0;
+
+  while (i < count) {
+    if (valid[i]) { i += 1; continue; }
+
+    U64 gap_start = i;
+    U64 gap_end   = i;
+    while (gap_end < count && !valid[gap_end]) { gap_end += 1; }
+
+    B32 has_left  = gap_start > 0;
+    B32 has_right = gap_end < count;
+    F64 left_val  = has_left  ? table->dat[(gap_start - 1) / 24].temperature_c[(gap_start - 1) % 24] : 0.0;
+    F64 right_val = has_right ? table->dat[gap_end / 24].temperature_c[gap_end % 24]                 : 0.0;
+
+    for (U64 k = gap_start; k < gap_end; k += 1) {
+      F64 v;
+      if      (has_left && has_right) { F64 t = (F64)(k - gap_start + 1) / (F64)(gap_end - gap_start + 1); v = left_val + (right_val - left_val) * t; }
+      else if (has_left)              { v = left_val; }
+      else if (has_right)             { v = right_val; }
+      else                            { v = 0.0; }
+
+      table->dat[k / 24].temperature_c[k % 24] = v;
+    }
+
+    filled += (gap_end - gap_start);
+    i       = gap_end;
+  }
+
+  if (filled > 0) {
+    log_warning("%S: linearly interpolated %llu missing temperature_c reading(s)", file_path, filled);
+  }
+}
+
+// NOTE(cmat): Same gap-filling scheme as rs_meteo_radiation_interpolate_gaps, applied to
+// - `speed_m_s` (a plain scalar, so straight linear interpolation is fine).
+function void rs_meteo_wind_speed_interpolate_gaps(RS_Meteo_Wind_Table *table, B32 *valid, Str08 file_path) {
+  U64 count  = table->len * 24;
+  U64 filled = 0;
+  U64 i      = 0;
+
+  while (i < count) {
+    if (valid[i]) { i += 1; continue; }
+
+    U64 gap_start = i;
+    U64 gap_end   = i;
+    while (gap_end < count && !valid[gap_end]) { gap_end += 1; }
+
+    B32 has_left  = gap_start > 0;
+    B32 has_right = gap_end < count;
+    F64 left_val  = has_left  ? table->dat[(gap_start - 1) / 24].speed_m_s[(gap_start - 1) % 24] : 0.0;
+    F64 right_val = has_right ? table->dat[gap_end / 24].speed_m_s[gap_end % 24]                 : 0.0;
+
+    for (U64 k = gap_start; k < gap_end; k += 1) {
+      F64 v;
+      if      (has_left && has_right) { F64 t = (F64)(k - gap_start + 1) / (F64)(gap_end - gap_start + 1); v = left_val + (right_val - left_val) * t; }
+      else if (has_left)              { v = left_val; }
+      else if (has_right)             { v = right_val; }
+      else                            { v = 0.0; }
+
+      table->dat[k / 24].speed_m_s[k % 24] = v;
+    }
+
+    filled += (gap_end - gap_start);
+    i       = gap_end;
+  }
+
+  if (filled > 0) {
+    log_warning("%S: linearly interpolated %llu missing speed_m_s reading(s)", file_path, filled);
+  }
+}
+
+// NOTE(cmat): Same gap-filling scheme as the others, applied to `dir_from_deg` - but a
+// - compass bearing wraps at 0/360, so a straight linear blend would sweep a gap like
+// - 350 deg -> 10 deg the "long way" through 180 deg. Instead this interpolates the unit
+// - vector (cos, sin) of the bearing and converts back with atan2, which always takes the
+// - short way around the circle.
+function void rs_meteo_wind_dir_interpolate_gaps(RS_Meteo_Wind_Table *table, B32 *valid, Str08 file_path) {
+  U64 count  = table->len * 24;
+  U64 filled = 0;
+  U64 i      = 0;
+
+  while (i < count) {
+    if (valid[i]) { i += 1; continue; }
+
+    U64 gap_start = i;
+    U64 gap_end   = i;
+    while (gap_end < count && !valid[gap_end]) { gap_end += 1; }
+
+    B32 has_left  = gap_start > 0;
+    B32 has_right = gap_end < count;
+    F64 left_deg  = has_left  ? table->dat[(gap_start - 1) / 24].dir_from_deg[(gap_start - 1) % 24] : 0.0;
+    F64 right_deg = has_right ? table->dat[gap_end / 24].dir_from_deg[gap_end % 24]                 : 0.0;
+    F64 left_rad  = left_deg  * (RS_METEO_PI / 180.0);
+    F64 right_rad = right_deg * (RS_METEO_PI / 180.0);
+
+    for (U64 k = gap_start; k < gap_end; k += 1) {
+      F64 deg;
+      if (has_left && has_right) {
+        F64 t = (F64)(k - gap_start + 1) / (F64)(gap_end - gap_start + 1);
+        F64 x = cos(left_rad) * (1.0 - t) + cos(right_rad) * t;
+        F64 y = sin(left_rad) * (1.0 - t) + sin(right_rad) * t;
+        deg   = atan2(y, x) * (180.0 / RS_METEO_PI);
+        if (deg < 0.0) { deg += 360.0; }
+      } else if (has_left)  { deg = left_deg; }
+      else if (has_right)   { deg = right_deg; }
+      else                  { deg = 0.0; }
+
+      table->dat[k / 24].dir_from_deg[k % 24] = deg;
+    }
+
+    filled += (gap_end - gap_start);
+    i       = gap_end;
+  }
+
+  if (filled > 0) {
+    log_warning("%S: circularly interpolated %llu missing dir_from_deg reading(s)", file_path, filled);
+  }
+}
+
 function RS_Meteo_Radiation_Table rs_meteo_radiation_table_load(Arena *arena, Str08 file_path) {
   profiler_begin_function();
   log_zone_start("Loading global radiation CSV: \"%S\"", file_path);
@@ -44,6 +269,10 @@ function RS_Meteo_Radiation_Table rs_meteo_radiation_table_load(Arena *arena, St
           result.len = rows_len;
           result.dat = arena_push_count(arena, RS_Meteo_Radiation_Row, rows_len);
 
+          // NOTE(cmat): One flag per hourly reading (row-major, 24 per day) - tracks which
+          // - readings were actually present in the CSV vs. filled in below by interpolation.
+          B32 *valid = arena_push_count(scratch.arena, B32, rows_len * 24);
+
           // NOTE(cmat): Second pass parses each row: station;year;month;day;RGLO01..RGLO24.
           Scan scan = { };
           scan_init(&scan, scratch.arena, data);
@@ -59,7 +288,9 @@ function RS_Meteo_Radiation_Table rs_meteo_radiation_table_load(Arena *arena, St
             row->day   = (U32)day;
 
             for Iter_Index(h, 24) {
-              row->global_radiation_w_m2[h] = scan_f64(&scan); // NOTE(cmat): W/m^2 already - no unit conversion needed.
+              B32 ok;
+              row->global_radiation_w_m2[h] = rs_meteo_scan_f64_optional(&scan, &ok, file_path, str08_lit("global_radiation_w_m2")); // NOTE(cmat): W/m^2 already - no unit conversion needed.
+              valid[it * 24 + h] = ok;
               if (h != 23) { scan_require(&scan, str08_lit(";")); }
             }
 
@@ -71,6 +302,8 @@ function RS_Meteo_Radiation_Table rs_meteo_radiation_table_load(Arena *arena, St
           for (Scan_Error *it = scan_error(&scan); it; it = it->next) {
             log_fatal("rs_meteo_radiation_table_load error: %u:%u: %S", it->line_at, it->char_at, it->message);
           }
+
+          rs_meteo_radiation_interpolate_gaps(&result, valid, file_path);
         }
       }
     }
@@ -122,6 +355,10 @@ function RS_Meteo_Temperature_Table rs_meteo_temperature_table_load(Arena *arena
           result.len = rows_len;
           result.dat = arena_push_count(arena, RS_Meteo_Temperature_Row, rows_len);
 
+          // NOTE(cmat): One flag per hourly reading - tracks which readings were actually
+          // - present in the CSV vs. filled in below by interpolation.
+          B32 *valid = arena_push_count(scratch.arena, B32, rows_len * 24);
+
           // NOTE(cmat): Second pass parses each row: station;year;month;day;T00..T23 (tenths of degC, can be negative).
           Scan scan = { };
           scan_init(&scan, scratch.arena, data);
@@ -137,8 +374,10 @@ function RS_Meteo_Temperature_Table rs_meteo_temperature_table_load(Arena *arena
             row->day   = (U32)day;
 
             for Iter_Index(h, 24) {
-              F64 tenths_c = scan_f64(&scan); // NOTE(cmat): scan_f64 handles the leading '-' for sub-zero readings.
-              row->temperature_c[h] = tenths_c / 10.0; // NOTE(cmat): tenths of degC -> degC.
+              B32 ok;
+              F64 tenths_c = rs_meteo_scan_f64_optional(&scan, &ok, file_path, str08_lit("temperature_c")); // NOTE(cmat): scan_f64 handles the leading '-' for sub-zero readings.
+              row->temperature_c[h] = tenths_c / 10.0; // NOTE(cmat): tenths of degC -> degC (0.0 is just a placeholder for a missing reading here).
+              valid[it * 24 + h] = ok;
               if (h != 23) { scan_require(&scan, str08_lit(";")); }
             }
 
@@ -149,6 +388,8 @@ function RS_Meteo_Temperature_Table rs_meteo_temperature_table_load(Arena *arena
           for (Scan_Error *it = scan_error(&scan); it; it = it->next) {
             log_fatal("rs_meteo_temperature_table_load error: %u:%u: %S", it->line_at, it->char_at, it->message);
           }
+
+          rs_meteo_temperature_interpolate_gaps(&result, valid, file_path);
         }
       }
     }
@@ -199,6 +440,12 @@ function RS_Meteo_Wind_Table rs_meteo_wind_table_load(Arena *arena, Str08 file_p
           result.len = rows_len;
           result.dat = arena_push_count(arena, RS_Meteo_Wind_Row, rows_len);
 
+          // NOTE(cmat): dir_from_deg and speed_m_s can each be missing independently, so they
+          // - each get their own valid-mask and are interpolated separately below (direction
+          // - circularly, speed linearly).
+          B32 *valid_dir   = arena_push_count(scratch.arena, B32, rows_len * 24);
+          B32 *valid_speed = arena_push_count(scratch.arena, B32, rows_len * 24);
+
           // NOTE(cmat): Second pass parses each row: station;year;month;day;(DIR_hh;speed_hh) x 24.
           Scan scan = { };
           scan_init(&scan, scratch.arena, data);
@@ -214,11 +461,15 @@ function RS_Meteo_Wind_Table rs_meteo_wind_table_load(Arena *arena, Str08 file_p
             row->day   = (U32)day;
 
             for Iter_Index(h, 24) {
-              F64 dir_tens   = scan_f64(&scan); scan_require(&scan, str08_lit(";"));
-              F64 speed_tenths = scan_f64(&scan);
+              B32 dir_ok, speed_ok;
+              F64 dir_tens     = rs_meteo_scan_f64_optional(&scan, &dir_ok, file_path, str08_lit("dir_from_deg")); scan_require(&scan, str08_lit(";"));
+              F64 speed_tenths = rs_meteo_scan_f64_optional(&scan, &speed_ok, file_path, str08_lit("speed_m_s"));
 
-              row->dir_from_deg[h] = dir_tens * 10.0;   // NOTE(cmat): tens of degrees -> degrees.
-              row->speed_m_s[h]    = speed_tenths / 10.0; // NOTE(cmat): tenths of m/s -> m/s.
+              row->dir_from_deg[h] = dir_tens * 10.0;   // NOTE(cmat): tens of degrees -> degrees (placeholder if missing).
+              row->speed_m_s[h]    = speed_tenths / 10.0; // NOTE(cmat): tenths of m/s -> m/s (placeholder if missing).
+
+              valid_dir[it * 24 + h]   = dir_ok;
+              valid_speed[it * 24 + h] = speed_ok;
 
               if (h != 23) { scan_require(&scan, str08_lit(";")); }
             }
@@ -230,6 +481,9 @@ function RS_Meteo_Wind_Table rs_meteo_wind_table_load(Arena *arena, Str08 file_p
           for (Scan_Error *it = scan_error(&scan); it; it = it->next) {
             log_fatal("rs_meteo_wind_table_load error: %u:%u: %S", it->line_at, it->char_at, it->message);
           }
+
+          rs_meteo_wind_speed_interpolate_gaps(&result, valid_speed, file_path);
+          rs_meteo_wind_dir_interpolate_gaps(&result, valid_dir, file_path);
         }
       }
     }
