@@ -366,17 +366,6 @@ function void redsim_group_entry(void *user_data) {
   fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
   flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
 
-#if 0
-  F32 time = 0;
-  for Iter_Index(it, 100) {
-    F32 time_step = fl_solver_euler_solve_implicit(&solver, fl_scale_normalize_time(&ref_scale, 100.f));
-    time += fl_scale_denormalize_time(&ref_scale, time_step);
-
-    // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
-    fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
-    flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step);
-  }
-#else
   // NOTE(cmat): Simulate the full requested window - 2014-11-06 Thursday 00:00 through
   // - 2014-11-30 Sunday 23:00 - which is exactly the `nox_ratios.len` hourly rows loaded
   // - above (600 hours = 25 days * 24h). Run in ~10s physical steps until that many hours
@@ -449,13 +438,12 @@ function void redsim_group_entry(void *user_data) {
       // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
       fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
       flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
-
-      log_info("exported hour %llu/%llu (t=%.0f s, day_weight=%.6e, T=%.1fK, GHI=%.0fW/m2, wind=%.1fm/s@%.0fdeg_from, cos_zenith=%.3f)",
-          current_hour, nox_ratios.len, (F64)time, day_weight,
-          atm.temperature_ground, wall.solar_irradiance, atm.wind_u_ref, wind_dir_deg, wall.cos_zenith);
     }
+
+    log_info("exported hour %llu/%llu (t=%.0f s, day_weight=%.6e, T=%.1fK, GHI=%.0fW/m2, wind=%.1fm/s@%.0fdeg_from, cos_zenith=%.3f)",
+             current_hour, nox_ratios.len, (F64)time, day_weight,
+             atm.temperature_ground, wall.solar_irradiance, atm.wind_u_ref, wind_dir_deg, wall.cos_zenith);
   }
-#endif
 
   log_zone_end();
   profiler_end_function();
