@@ -191,6 +191,7 @@ function void flf_ensight_export_init(FLF_Ensight_Export *export, Str08 folder_p
           "model: data/ugrid.geo"                                                                               "\n"
           "VARIABLE"                                                                                            "\n"
           "scalar per element: 1 phi                    data/cell_phi.bin******"                                "\n"
+#if 0
           "scalar per element: 1 density                data/cell_density.bin******"                            "\n"
           "scalar per element: 1 energy                 data/cell_energy.bin******"                             "\n"
           "scalar per element: 1 pressure               data/cell_pressure.bin******"                           "\n"
@@ -199,6 +200,7 @@ function void flf_ensight_export_init(FLF_Ensight_Export *export, Str08 folder_p
           "scalar per element: 1 time_step              data/cell_time_step.bin******"                          "\n"
           "scalar per element: 1 local_index            data/cell_local_index.bin******"                        "\n"
           "scalar per element: 1 q_criterion            data/cell_q_criterion.bin******"                        "\n"
+#endif
           "vector per element: 1 velocity               data/cell_velocity.bin******"                           "\n"
           "TIME"                                                                                                "\n"
           "time set: 1"                                                                                         "\n"
@@ -309,6 +311,7 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scal
   }
   flf_ensight_export_cell_variable(export, str08_lit("phi"), 1, variable_buffer);
 
+#if 0
   // NOTE(cmat): Density
   for Iter_Range(it, lane_range(cell_count)) {
     variable_buffer[it] = fl_scale_denormalize_density(scale, state->rho[it]);
@@ -351,6 +354,7 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scal
   // NOTE(cmat): Local Index
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = (F32)(it); }
   flf_ensight_export_cell_variable(export, str08_lit("local_index"), 1, variable_buffer);
+#endif
 
   // NOTE(cmat): Velocity
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[0 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v1[it], state->rho[it])); }
@@ -358,11 +362,13 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scal
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[2 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v3[it], state->rho[it])); }
   flf_ensight_export_cell_variable(export, str08_lit("velocity"), 3, variable_buffer);
 
+#if 0
   // NOTE(cmat): Q-criterion
   for Iter_Range(it, lane_range(cell_count)) {
     variable_buffer[it] = fl_gradient_q_criterion(grad, it);
   }
   flf_ensight_export_cell_variable(export, str08_lit("q_criterion"), 1, variable_buffer);
+#endif
 
   // NOTE(cmat): Export new timestep.
   // NOTE(cmat): First, we modify the number of steps.

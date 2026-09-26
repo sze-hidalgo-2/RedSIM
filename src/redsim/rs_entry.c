@@ -27,6 +27,12 @@
 #include "rs_emission.h"
 #include "rs_emission.c"
 
+#include "rs_nox_ratios.h"
+#include "rs_nox_ratios.c"
+
+#include "rs_meteo.h"
+#include "rs_meteo.c"
+
 function void redsim_group_entry(void *user_data) {
   profiler_begin_function();
   log_zone_start("Thread Group Entry");
@@ -101,35 +107,67 @@ function void redsim_group_entry(void *user_data) {
 
   ug_mesh_spatial_grid(&permanent_arena, &mesh, 100);
 
+  // NOTE(cmat): Simulation window - unchanged from before: 2014-11-06 Thursday 00:00 UTC
+  // - through 2014-11-30 Sunday 23:00 UTC (600 hours / 25 days). The met station CSVs below
+  // - cover the full year 2014, not just this window, so lookups index by calendar date/hour
+  // - rather than by row order.
+  U32 sim_start_year  = 2014;
+  U32 sim_start_month = 11;
+  U32 sim_start_day   = 6;
+  U32 sim_start_hour  = 0;
+
+  // NOTE(cmat): Domain location - Madrid. Used only for the solar-position calculation below;
+  // - there's no measured sun-angle/zenith data, so it has to be computed astronomically.
+  F64 madrid_lat_deg = 40.4168;
+  F64 madrid_lon_deg = -3.7038;
+
+  // NOTE(cmat): Load the full-year meteorological station CSVs (radiation, temperature, wind).
+  // - Loads on lane 0 and broadcasts internally, so this is safe to call from every lane.
+  RS_Meteo_Radiation_Table   meteo_radiation   = rs_meteo_radiation_table_load  (&permanent_arena, str08_lit("madrid/3129_GLOBAL_RADIATION-2014.csv"));
+  RS_Meteo_Temperature_Table meteo_temperature = rs_meteo_temperature_table_load(&permanent_arena, str08_lit("madrid/3195_TEMPERATURE_2014.csv"));
+  RS_Meteo_Wind_Table        meteo_wind        = rs_meteo_wind_table_load       (&permanent_arena, str08_lit("madrid/3195_WIND-2014.csv"));
+
+  // NOTE(cmat): Initial (t=0) boundary-condition state, sourced from the tables/solar-geometry
+  // - above - re-derived every step in the main loop below as simulated time advances.
+  RS_Sim_Time       sim_time_0 = rs_sim_time_from_elapsed(sim_start_year, sim_start_month, sim_start_day, sim_start_hour, 0.0);
+  RS_Solar_Position sun_0      = rs_solar_position(madrid_lat_deg, madrid_lon_deg, sim_time_0);
+
+  F64 radiation_0_w_m2 = rs_meteo_radiation_lookup  (&meteo_radiation,   sim_time_0.year, sim_time_0.month, sim_time_0.day, sim_time_0.hour);
+  F64 temperature_0_c  = rs_meteo_temperature_lookup(&meteo_temperature, sim_time_0.year, sim_time_0.month, sim_time_0.day, sim_time_0.hour);
+  F64 wind_dir_0_deg = 0.0, wind_speed_0_m_s = 0.0;
+  rs_meteo_wind_lookup(&meteo_wind, sim_time_0.year, sim_time_0.month, sim_time_0.day, sim_time_0.hour, &wind_dir_0_deg, &wind_speed_0_m_s);
+
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
   FL_Boundary_Atmospheric atm = {
-    .temperature_ground = 306.15f,  // 33 °C — typical Madrid July afternoon high
+    .temperature_ground = (F32)(temperature_0_c + 273.15), // NOTE(cmat): station T (degC, from the tenths-of-degC T00..T23 columns) -> Kelvin.
     .pressure_ground    = 94000.f,  // ~940 hPa station pressure at Madrid's ~667 m elevation
                                      // (NOT sea-level 101325 Pa — Madrid sits high enough that this matters)
+                                     // NOTE(cmat): no station-pressure CSV was provided, so this stays a fixed assumption.
     .gravity            = 9.81f,
     .lapse_rate         = 0.0065f,  // standard tropospheric lapse rate, fine for a shallow domain
-    .wind_angle         = 0, // f32_pi,     // domain-orientation dependent, left as-is
+    .wind_angle         = (F32)rs_meteo_wind_angle_math_rad(wind_dir_0_deg), // NOTE(cmat): station DIR_hh (tens-of-deg, direction wind comes FROM) -> math angle (rad, direction wind blows TOWARD).
     .wind_d             = 0.f,
     .wind_z0            = 0.5f,    // open/low-vegetation terrain — bump toward 0.5-1.0 if this is a dense urban domain
-    .wind_z_ref         = 25.f,
-    .wind_u_ref         = 4.0f,     // ~14 km/h — a light, unremarkable summer breeze
+    .wind_z_ref         = 25.f,    // NOTE(cmat): station anemometer height - 25 m, as given.
+    .wind_u_ref         = (F32)wind_speed_0_m_s, // NOTE(cmat): station speed_hh (tenths of m/s) -> m/s.
     .wind_z_cap         = 250.f,
   };
 
   FL_Boundary_Radiation_Wall wall = {
-    .solar_irradiance     = 900.f,    // clear-sky GHI near solar noon at 40.4°N in July
+    .solar_irradiance     = (F32)radiation_0_w_m2, // NOTE(cmat): station RGLOhh - already W/m^2 (global/horizontal irradiance), no conversion needed.
     .gamma_coeff          = 0.85f,    // concrete/stone emissivity (this field doubles as ε in h_rad,
                                        // so it needs to be a real material emissivity, not a small
                                        // ground-heat-flux fraction — 0.35 was too low for that role)
     .albedo               = 0.20f,    // typical light concrete/stone urban albedo
     .sky_view_factor      = 0.4f,     // unchanged — depends on your street-canyon/domain geometry
-    .diffuse_fraction     = 0.12f,    // slightly clearer sky than before, still physically typical
-    .cos_zenith           = 0.94f,    // zenith ≈ 19.9° = |lat 40.4° − mid-July declination ~20.5°| at solar noon
+    .diffuse_fraction     = 0.12f,    // NOTE(cmat): the dataset only reports total (global) irradiance, no direct/diffuse
+                                       // split, so this stays a fixed physically-typical assumption.
+    .cos_zenith           = (F32)((sun_0.cos_zenith > 0.001) ? sun_0.cos_zenith : 0.001), // NOTE(cmat): computed for Madrid at t=0 (no measured sun-angle data exists); clamped away from 0 to avoid a divide-by-zero in fl_boundary_radiation_heat_flux at night.
     .thermal_conductivity = 0.026f,   // unchanged (this is air's k; currently unused by the equilibrium formula anyway)
-    .temperature_min      = 293.15f,  // ~20 °C, typical Madrid summer night low
-    .temperature_max      = 310.0f, // 343.15f,  // ~70 °C, realistic peak for sun-exposed stone/asphalt
+    .temperature_min      = 293.15f,  // ~20 °C floor on the *wall* equilibrium temperature - a generic safety clamp, not tied to this specific window
+    .temperature_max      = 310.0f, // 343.15f,  // ~70 °C ceiling on the *wall* equilibrium temperature - same, a generic safety clamp
     .domain_center        = v3f_mul(.5f, v3f_add(mesh.bounds_global.min, mesh.bounds_global.max)).xy,
     .domain_radius        = v3f_mul(.5f, v3f_sub(mesh.bounds_global.max, mesh.bounds_global.min)).xy,
   };
@@ -252,29 +290,39 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Load traffic-emission line sources from CSV (x0,y0,x1,y1,value_1,value_2).
   // - 0.2f: release height above the road surface, matching the old single-point example.
   // - Loads on lane 0 and broadcasts internally, so this is safe to call from every lane.
-  CSV_Emission_Line_Array emission_lines = csv_emission_lines_load(&permanent_arena, str08_lit("Traffic_Emissions_2014.csv"), 0.5f);
+  CSV_Emission_Line_Array emission_lines = csv_emission_lines_load(&permanent_arena, str08_lit("madrid/Traffic_Emissions_2014.csv"), 0.5f);
 
-  F32 *scalar_emission = 0;
+  // NOTE(cmat): Load the NOx time-of-day/day-of-week ratio table
+  // - (Traffic_Emission_2014_NOX_ratios.csv). Row 0 must line up with the simulation's
+  // - start date/hour (2014;11;6;Thursday;0), one row per hour with no gaps - so `time`
+  // - (elapsed simulated seconds, accumulated in the loop below) indexes straight into it.
+  RS_NOX_Ratio_Table nox_ratios = rs_nox_ratio_table_load(&permanent_arena, str08_lit("madrid/Traffic_Emission_2014_NOX_ratios.csv"));
+
+  // NOTE(cmat): emission_scale = day_weight * emission_const. Split out so day_weight can
+  // - be re-looked-up from nox_ratios every step as simulated time advances.
+  F64 emission_const = (1000.0 * 1.9e+9) / (24.0 * 3600.0 * 25.0);
+
+  F32 *scalar_emission_unit = 0; // NOTE(cmat): per-cell line contribution, NOT yet scaled by day_weight.
+  F32 *scalar_emission      = 0; // NOTE(cmat): scalar_emission_unit * emission_scale(current day_weight).
   if (lane_index() == 0) {
-    scalar_emission = arena_push_count(&permanent_arena, F32, mesh.cells.len);
+    scalar_emission_unit = arena_push_count(&permanent_arena, F32, mesh.cells.len);
+    scalar_emission      = arena_push_count(&permanent_arena, F32, mesh.cells.len);
   }
+  lane_broadcast_ptr(&scalar_emission_unit, 0);
   lane_broadcast_ptr(&scalar_emission, 0);
 
   for Iter_Range(it, lane_range(mesh.cells.len)) {
-    scalar_emission[it] = 0.f;
+    scalar_emission_unit[it] = 0.f;
+    scalar_emission[it]      = 0.f;
   }
   lane_barrier();
 
   // NOTE(cmat): Trace every line through the mesh and spread its value_1 across the
   // - cells it crosses, weighted by (t_exit - t_enter) so each line's total contribution
   // - sums back to value_1. Done single-threaded on lane 0, same as the CSV load above -
-  // - scalar_emission is shared (broadcast above), so accumulating from multiple lanes
-  // - here without atomics would race.
-
-
-  F64 day_weight     = 0.000361374f;
-  F64 emission_scale = (day_weight * 1000.f * 1.9e+9) / (24.f * 3600.f * 25.f);
-
+  // - scalar_emission_unit is shared (broadcast above), so accumulating from multiple lanes
+  // - here without atomics would race. NOT scaled by day_weight here - day_weight changes
+  // - with simulated time, so that scaling is applied every step in the loop below instead.
   if (lane_index() == 0) {
     U32 lines_missed = 0;
     for Iter_Index(it_line, emission_lines.len) {
@@ -289,10 +337,22 @@ function void redsim_group_entry(void *user_data) {
       for Iter_Index(it_hit, trace.len) {
         UG_Segment_Hit *hit    = &trace.dat[it_hit];
         F32             weight = hit->t_exit - hit->t_enter; // NOTE(cmat): fraction of the line inside this cell.
-        scalar_emission[hit->cell] += (F32)(emission_scale * line->value_1 * weight);
+        scalar_emission_unit[hit->cell] += (F32)(line->value_1 * weight);
       }
     }
     log_info("emission lines: %llu loaded, %u missed the mesh entirely", emission_lines.len, lines_missed);
+  }
+  lane_barrier();
+
+  // NOTE(cmat): day_weight for t=0 (simulation start, 2014-11-06 Thursday 00:00) - looked
+  // - up again every step in the main loop below as `time` advances.
+  F64 day_weight     = rs_nox_ratio_table_day_weight(&nox_ratios, 0.0);
+  F64 emission_scale = day_weight * emission_const;
+
+  if (lane_index() == 0) {
+    for Iter_Index(it_cell, mesh.cells.len) {
+      scalar_emission[it_cell] = (F32)(scalar_emission_unit[it_cell] * emission_scale);
+    }
   }
   lane_barrier();
 
@@ -317,18 +377,83 @@ function void redsim_group_entry(void *user_data) {
     flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step);
   }
 #else
-  F32 time = 0;
-  for Iter_Index(it, 300) { // 300, 10
+  // NOTE(cmat): Simulate the full requested window - 2014-11-06 Thursday 00:00 through
+  // - 2014-11-30 Sunday 23:00 - which is exactly the `nox_ratios.len` hourly rows loaded
+  // - above (600 hours = 25 days * 24h). Run in ~10s physical steps until that many hours
+  // - of simulated time have elapsed, rather than a fixed iteration count.
+  F64 sim_total_seconds = (F64)nox_ratios.len * 3600.0;
+
+  F32 time              = 0;
+  U64 last_exported_hour = 0; // NOTE(cmat): hour 0 was already exported above (t=0 initial state).
+
+  log_info("simulating %llu hours (%.0f s) of traffic-emission time, exporting once per hour",
+      nox_ratios.len, sim_total_seconds);
+
+  while ((F64)time < sim_total_seconds) {
     // NOTE(cmat): Exchange halos, fill ghosts, compute gradients. Compute & discard residual for now.
     fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 0);
     fl_solver_scalar_solve_implicit(&scalar_solver, fl_scale_normalize_time(&ref_scale, 10.f));
 
     F32 time_step = fl_solver_euler_solve_implicit(&solver, fl_scale_normalize_time(&ref_scale, 10.f));
+    if (time_step <= 0.f) {
+      log_info("solver returned a non-positive time step (%f) - stopping early at t=%.0f s", time_step, (F64)time);
+      break;
+    }
     time += fl_scale_denormalize_time(&ref_scale, time_step);
 
-    // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
-    fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
-    flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
+    // NOTE(cmat): Re-look-up day_weight for the new simulated time (nox_ratios is
+    // - hour-of-day/day-of-week dependent) and rescale the emission source accordingly.
+    // - Done every physical step regardless of export cadence, so the forcing itself
+    // - stays accurate even though we only *export* once per hour.
+    day_weight     = rs_nox_ratio_table_day_weight(&nox_ratios, (F64)time);
+    emission_scale = day_weight * emission_const;
+    if (lane_index() == 0) {
+      for Iter_Index(it_cell, mesh.cells.len) {
+        scalar_emission[it_cell] = (F32)(scalar_emission_unit[it_cell] * emission_scale);
+      }
+    }
+    lane_barrier();
+    fl_solver_scalar_source_set(&scalar_solver, scalar_emission);
+
+    // NOTE(cmat): Re-derive the atmospheric/radiation boundary conditions for the new
+    // - simulated time: continuous solar geometry (Madrid) from an astronomical formula
+    // - (no measured sun-angle data exists), and station-measured temperature/wind/radiation
+    // - from the CSVs loaded above (hourly-stepped, same cadence as day_weight above).
+    RS_Sim_Time       sim_now = rs_sim_time_from_elapsed(sim_start_year, sim_start_month, sim_start_day, sim_start_hour, (F64)time);
+    RS_Solar_Position sun_now = rs_solar_position(madrid_lat_deg, madrid_lon_deg, sim_now);
+
+    F64 radiation_w_m2 = rs_meteo_radiation_lookup  (&meteo_radiation,   sim_now.year, sim_now.month, sim_now.day, sim_now.hour);
+    F64 temperature_c  = rs_meteo_temperature_lookup(&meteo_temperature, sim_now.year, sim_now.month, sim_now.day, sim_now.hour);
+    F64 wind_dir_deg = 0.0, wind_speed_m_s = 0.0;
+    rs_meteo_wind_lookup(&meteo_wind, sim_now.year, sim_now.month, sim_now.day, sim_now.hour, &wind_dir_deg, &wind_speed_m_s);
+
+    atm.temperature_ground = (F32)(temperature_c + 273.15);
+    atm.wind_angle         = (F32)rs_meteo_wind_angle_math_rad(wind_dir_deg);
+    atm.wind_u_ref         = (F32)wind_speed_m_s;
+
+    wall.solar_irradiance  = (F32)radiation_w_m2;
+    wall.cos_zenith        = (F32)((sun_now.cos_zenith > 0.001) ? sun_now.cos_zenith : 0.001); // NOTE(cmat): clamp away from 0 - see the note on wall.cos_zenith's initial value above.
+
+    if (lane_index() == 0) {
+      *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
+      *fl_boundary_map_by_index(&boundary, 1) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
+      *fl_boundary_map_by_index(&boundary, 2) = (FL_Boundary) { .type = FL_Boundary_Type_Atmospheric,     .atmospheric    = atm  };
+    }
+    lane_barrier();
+
+    // NOTE(cmat): Only export once we've crossed into a new simulated hour - not every step.
+    U64 current_hour = (U64)((F64)time / 3600.0);
+    if (current_hour > last_exported_hour) {
+      last_exported_hour = current_hour;
+
+      // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
+      fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
+      flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
+
+      log_info("exported hour %llu/%llu (t=%.0f s, day_weight=%.6e, T=%.1fK, GHI=%.0fW/m2, wind=%.1fm/s@%.0fdeg_from, cos_zenith=%.3f)",
+          current_hour, nox_ratios.len, (F64)time, day_weight,
+          atm.temperature_ground, wall.solar_irradiance, atm.wind_u_ref, wind_dir_deg, wall.cos_zenith);
+    }
   }
 #endif
 
