@@ -110,13 +110,14 @@ function void redsim_group_entry(void *user_data) {
                                      // (NOT sea-level 101325 Pa — Madrid sits high enough that this matters)
     .gravity            = 9.81f,
     .lapse_rate         = 0.0065f,  // standard tropospheric lapse rate, fine for a shallow domain
-    .wind_angle         = f32_pi,     // domain-orientation dependent, left as-is
+    .wind_angle         = 0, // f32_pi,     // domain-orientation dependent, left as-is
     .wind_d             = 0.f,
     .wind_z0            = 0.5f,    // open/low-vegetation terrain — bump toward 0.5-1.0 if this is a dense urban domain
-    .wind_z_ref         = 10.f,
+    .wind_z_ref         = 25.f,
     .wind_u_ref         = 4.0f,     // ~14 km/h — a light, unremarkable summer breeze
     .wind_z_cap         = 250.f,
   };
+
   FL_Boundary_Radiation_Wall wall = {
     .solar_irradiance     = 900.f,    // clear-sky GHI near solar noon at 40.4°N in July
     .gamma_coeff          = 0.85f,    // concrete/stone emissivity (this field doubles as ε in h_rad,
@@ -243,7 +244,7 @@ function void redsim_group_entry(void *user_data) {
   );
 
   // fl_solver_scalar_set_uniform(&scalar_solver, 0.001f);
-  fl_solver_scalar_set_uniform(&scalar_solver, 0.001f);
+  fl_solver_scalar_set_uniform(&scalar_solver, 0.0f);
   lane_barrier();
 
 #endif
@@ -269,6 +270,11 @@ function void redsim_group_entry(void *user_data) {
   // - sums back to value_1. Done single-threaded on lane 0, same as the CSV load above -
   // - scalar_emission is shared (broadcast above), so accumulating from multiple lanes
   // - here without atomics would race.
+
+
+  F64 day_weight     = 0.000361374f;
+  F64 emission_scale = (day_weight * 1000.f * 1.9e+9) / (24.f * 3600.f * 25.f);
+
   if (lane_index() == 0) {
     U32 lines_missed = 0;
     for Iter_Index(it_line, emission_lines.len) {
@@ -283,7 +289,7 @@ function void redsim_group_entry(void *user_data) {
       for Iter_Index(it_hit, trace.len) {
         UG_Segment_Hit *hit    = &trace.dat[it_hit];
         F32             weight = hit->t_exit - hit->t_enter; // NOTE(cmat): fraction of the line inside this cell.
-        scalar_emission[hit->cell] += line->value_1 * weight;
+        scalar_emission[hit->cell] += (F32)(emission_scale * line->value_1 * weight);
       }
     }
     log_info("emission lines: %llu loaded, %u missed the mesh entirely", emission_lines.len, lines_missed);
