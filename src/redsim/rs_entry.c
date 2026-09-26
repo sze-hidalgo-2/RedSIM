@@ -140,6 +140,16 @@ function void redsim_group_entry(void *user_data) {
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
 
+
+   // NOTE(cmat): Unit vector pointing toward the sun at t=0, math-angle/Easting-Northing
+   // - convention (same as atm.wind_angle) - feeds wall.sun_direction below.
+   F64 sin_zenith_0    = sqrt(f64_max(0.0, 1.0 - sun_0.cos_zenith * sun_0.cos_zenith));
+   V3F sun_direction_0 = v3f(
+     (F32)(sin_zenith_0 * cos(sun_0.azimuth_math_rad)),
+     (F32)(sin_zenith_0 * sin(sun_0.azimuth_math_rad)),
+     (F32)sun_0.cos_zenith
+   );
+
   FL_Boundary_Atmospheric atm = {
     .temperature_ground = (F32)(temperature_0_c + 273.15), // NOTE(cmat): station T (degC, from the tenths-of-degC T00..T23 columns) -> Kelvin.
     .pressure_ground    = 94000.f,  // ~940 hPa station pressure at Madrid's ~667 m elevation
@@ -150,7 +160,7 @@ function void redsim_group_entry(void *user_data) {
     .wind_angle         = (F32)rs_meteo_wind_angle_math_rad(wind_dir_0_deg), // NOTE(cmat): station DIR_hh (tens-of-deg, direction wind comes FROM) -> math angle (rad, direction wind blows TOWARD).
     .wind_d             = 0.f,
     .wind_z0            = 0.5f,    // open/low-vegetation terrain — bump toward 0.5-1.0 if this is a dense urban domain
-    .wind_z_ref         = 25.f,    // NOTE(cmat): station anemometer height - 25 m, as given.
+    .wind_z_ref         = 25.f, // 25.f,    // NOTE(cmat): station anemometer height - 25 m, as given.
     .wind_u_ref         = (F32)wind_speed_0_m_s, // NOTE(cmat): station speed_hh (tenths of m/s) -> m/s.
     .wind_z_cap         = 250.f,
   };
@@ -165,9 +175,11 @@ function void redsim_group_entry(void *user_data) {
     .diffuse_fraction     = 0.12f,    // NOTE(cmat): the dataset only reports total (global) irradiance, no direct/diffuse
                                        // split, so this stays a fixed physically-typical assumption.
     .cos_zenith           = (F32)((sun_0.cos_zenith > 0.001) ? sun_0.cos_zenith : 0.001), // NOTE(cmat): computed for Madrid at t=0 (no measured sun-angle data exists); clamped away from 0 to avoid a divide-by-zero in fl_boundary_radiation_heat_flux at night.
+     .sun_direction        = sun_direction_0, // NOTE(cmat): projects direct-beam irradiance onto each wall face's normal - see fl_boundary_radiation_heat_flux.
+
     .thermal_conductivity = 0.026f,   // unchanged (this is air's k; currently unused by the equilibrium formula anyway)
-    .temperature_min      = 293.15f,  // ~20 °C floor on the *wall* equilibrium temperature - a generic safety clamp, not tied to this specific window
-    .temperature_max      = 310.0f, // 343.15f,  // ~70 °C ceiling on the *wall* equilibrium temperature - same, a generic safety clamp
+    .temperature_min      = atm.temperature_ground - 15.f,  // was: 293.15f
+    .temperature_max      = atm.temperature_ground + 40.f,  // was: 310.0f (343.15f commented out)
     .domain_center        = v3f_mul(.5f, v3f_add(mesh.bounds_global.min, mesh.bounds_global.max)).xy,
     .domain_radius        = v3f_mul(.5f, v3f_sub(mesh.bounds_global.max, mesh.bounds_global.min)).xy,
   };
@@ -416,12 +428,25 @@ function void redsim_group_entry(void *user_data) {
     F64 wind_dir_deg = 0.0, wind_speed_m_s = 0.0;
     rs_meteo_wind_lookup(&meteo_wind, sim_now.year, sim_now.month, sim_now.day, sim_now.hour, &wind_dir_deg, &wind_speed_m_s);
 
+ 
+
     atm.temperature_ground = (F32)(temperature_c + 273.15);
     atm.wind_angle         = (F32)rs_meteo_wind_angle_math_rad(wind_dir_deg);
     atm.wind_u_ref         = (F32)wind_speed_m_s;
 
-    wall.solar_irradiance  = (F32)radiation_w_m2;
-    wall.cos_zenith        = (F32)((sun_now.cos_zenith > 0.001) ? sun_now.cos_zenith : 0.001); // NOTE(cmat): clamp away from 0 - see the note on wall.cos_zenith's initial value above.
+     F64 sin_zenith_now    = sqrt(f64_max(0.0, 1.0 - sun_now.cos_zenith * sun_now.cos_zenith));
+     V3F sun_direction_now = v3f(
+       (F32)(sin_zenith_now * cos(sun_now.azimuth_math_rad)),
+       (F32)(sin_zenith_now * sin(sun_now.azimuth_math_rad)),
+       (F32)sun_now.cos_zenith
+     );
+ 
+     wall.solar_irradiance  = (F32)radiation_w_m2;
+     wall.cos_zenith        = (F32)((sun_now.cos_zenith > 0.001) ? sun_now.cos_zenith : 0.001); // NOTE(cmat): clamp away from 0 - see the note on wall.cos_zenith's initial value above.
+     wall.sun_direction     = sun_direction_now;
+
+    wall.temperature_min   = atm.temperature_ground - 15.f;   // add
+    wall.temperature_max   = atm.temperature_ground + 40.f;   // add
 
     if (lane_index() == 0) {
       *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
@@ -436,9 +461,14 @@ function void redsim_group_entry(void *user_data) {
       last_exported_hour = current_hour;
 
       // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
-      fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
-      flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
+      // fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
+      // flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
     }
+
+#if 1
+    fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
+    flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
+#endif
 
     log_info("exported hour %llu/%llu (t=%.0f s, day_weight=%.6e, T=%.1fK, GHI=%.0fW/m2, wind=%.1fm/s@%.0fdeg_from, cos_zenith=%.3f)",
              current_hour, nox_ratios.len, (F64)time, day_weight,

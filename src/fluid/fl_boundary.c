@@ -31,10 +31,18 @@ force_inline function V3F fl_boundary_atmosphere_velocity(F32 z, FL_Boundary_Atm
   return result;
 }
 
-force_inline function F32 fl_boundary_radiation_heat_flux(FL_Boundary_Radiation_Wall *rad) {
+force_inline function F32 fl_boundary_radiation_heat_flux(FL_Boundary_Radiation_Wall *rad, V3F wall_normal) {
   F32 I_diff = rad->diffuse_fraction * rad->solar_irradiance;
+  // NOTE(cmat): DNI derived from GHI via the *solar* cos_zenith - this part was always
+  // - correct and is unchanged.
   F32 I_dir  = (rad->solar_irradiance - I_diff * rad->sky_view_factor) / rad->cos_zenith;
-  F32 q_bc   = rad->gamma_coeff * (1.f - rad->albedo) * (I_dir * rad->cos_zenith + I_diff * rad->sky_view_factor);
+  // NOTE(cmat): Re-project the direct beam onto *this wall's* face using the angle between
+  // - the wall normal and the sun direction - NOT rad->cos_zenith again (multiplying by
+  // - cos_zenith here just reconstructed GHI and made the sun-angle plumbing a no-op).
+  // - Clamped to 0 so a self-shaded face (pointing away from the sun) gets no direct beam
+  // - instead of a nonsensical negative one.
+  F32 cos_incidence = f32_max(0.f, v3f_dot(wall_normal, rad->sun_direction));
+  F32 q_bc = rad->gamma_coeff * (1.f - rad->albedo) * (I_dir * cos_incidence + I_diff * rad->sky_view_factor);
   return q_bc;
 }
 
@@ -61,8 +69,9 @@ function F32 sdf_rectangle(V2F p, V2F center, V2F half_size) {
 //   typical near-surface heat-transfer coefficient for atmospheric boundary layers.
 // - Reuses rad->gamma_coeff as effective longwave emissivity (0-1), since it's
 //   already a dimensionless absorption/efficiency-style coefficient on the struct.
-force_inline function F32 fl_boundary_radiation_wall_equilibrium_temperature(FL_Boundary_Radiation_Wall *rad, V3F inner_center, F32 T_air, F32 rho_air, F32 wind_speed, FL_Material *mat) {
-  F32 q_solar = fl_boundary_radiation_heat_flux(rad); // W/m^2
+force_inline function F32 fl_boundary_radiation_wall_equilibrium_temperature(FL_Boundary_Radiation_Wall *rad, V3F inner_center, V3F wall_normal, F32 T_air, F32 rho_air, F32 wind_speed, FL_Material *mat) {
+  F32 q_solar = fl_boundary_radiation_heat_flux(rad, wall_normal); // W/m^2
+
 
 #if 0
   F32 border_distance = -sdf_rectangle(inner_center.xy, rad->domain_center, rad->domain_radius);
@@ -190,7 +199,8 @@ force_inline function V5F fl_boundary_map_ghost(FL_Boundary_Map *bmap, U32 marke
       F32 T_inner        = P_inner / (rho_inner_dim * mat->gas_constant_R);
 
       F32 wind_speed_dim = fl_scale_denormalize_velocity(scale, f32_sqrt(v2_inner));
-      F32 T_ghost        = fl_boundary_radiation_wall_equilibrium_temperature(&boundary->radiation_wall, inner_center, T_inner, rho_inner_dim, wind_speed_dim, mat);
+
+      F32 T_ghost        = fl_boundary_radiation_wall_equilibrium_temperature(&boundary->radiation_wall, inner_center, normal, T_inner, rho_inner_dim, wind_speed_dim, mat);
       T_ghost            = f32_max(boundary->radiation_wall.temperature_min, f32_min(boundary->radiation_wall.temperature_max, T_ghost));
 
       V3F delta_pos      = v3f_sub(ghost_center, inner_center);

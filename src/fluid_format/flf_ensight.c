@@ -312,6 +312,7 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scal
   flf_ensight_export_cell_variable(export, str08_lit("phi"), 1, variable_buffer);
 
 #if 0
+
   // NOTE(cmat): Density
   for Iter_Range(it, lane_range(cell_count)) {
     variable_buffer[it] = fl_scale_denormalize_density(scale, state->rho[it]);
@@ -355,13 +356,11 @@ function void flf_ensight_export_flow(FLF_Ensight_Export *export, FL_Scale *scal
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[it] = (F32)(it); }
   flf_ensight_export_cell_variable(export, str08_lit("local_index"), 1, variable_buffer);
 #endif
-
   // NOTE(cmat): Velocity
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[0 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v1[it], state->rho[it])); }
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[1 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v2[it], state->rho[it])); }
   for Iter_Range(it, lane_range(cell_count)) { variable_buffer[2 * cell_count + it] = fl_scale_denormalize_velocity(scale, f32_div_safe(state->rho_v3[it], state->rho[it])); }
   flf_ensight_export_cell_variable(export, str08_lit("velocity"), 3, variable_buffer);
-
 #if 0
   // NOTE(cmat): Q-criterion
   for Iter_Range(it, lane_range(cell_count)) {

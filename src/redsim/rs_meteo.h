@@ -92,6 +92,7 @@ typedef struct RS_Solar_Position {
   F64 declination_rad;
   F64 hour_angle_rad;
   F64 equation_of_time_min;
+  F64 azimuth_math_rad; 
   F64 cos_zenith; // NOTE(cmat): NOT clamped - can be <= 0 when the sun is below the horizon; clamp at the call site before dividing by it.
 } RS_Solar_Position;
 

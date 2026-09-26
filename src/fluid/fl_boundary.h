@@ -40,6 +40,7 @@ typedef struct FL_Boundary_Radiation_Wall {
 
   V2F domain_center;
   V2F domain_radius;
+  V3F sun_direction;
 } FL_Boundary_Radiation_Wall;
 
 typedef struct FL_Boundary {

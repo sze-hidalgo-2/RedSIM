@@ -677,10 +677,23 @@ function RS_Solar_Position rs_solar_position(F64 latitude_deg, F64 longitude_deg
   F64 lat_rad = latitude_deg * (RS_METEO_PI / 180.0);
 
   F64 cos_zenith = sin(lat_rad) * sin(declination) + cos(lat_rad) * cos(declination) * cos(hour_angle);
+  // NOTE(cmat): Standard solar azimuth (from North, clockwise) - then converted to the same
+  // - math-angle convention as rs_meteo_wind_angle_math_rad, so callers can build a
+  // - sun-direction vector with the same cos/sin-as-Easting/Northing pattern used for wind.
+  F64 sin_zenith  = sqrt(f64_max(0.0, 1.0 - cos_zenith * cos_zenith));
+  F64 azimuth_from_north_rad = 0.0;
+  if (sin_zenith > 1e-6) {
+    F64 cos_azimuth = (sin(declination) - sin(lat_rad) * cos_zenith) / (cos(lat_rad) * sin_zenith);
+    cos_azimuth     = f64_max(-1.0, f64_min(1.0, cos_azimuth)); // guard acos domain
+    azimuth_from_north_rad = acos(cos_azimuth);
+    if (hour_angle > 0.0) { azimuth_from_north_rad = (2.0 * RS_METEO_PI) - azimuth_from_north_rad; } // afternoon: sun to the west
+  }
+  F64 azimuth_math_rad = (RS_METEO_PI / 2.0) - azimuth_from_north_rad;
 
   result.declination_rad      = declination;
   result.hour_angle_rad       = hour_angle;
   result.equation_of_time_min = eot_minutes;
+  result.azimuth_math_rad     = azimuth_math_rad;
   result.cos_zenith           = cos_zenith;
 
   return result;
