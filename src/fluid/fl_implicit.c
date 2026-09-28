@@ -527,10 +527,14 @@ function F32 fl_solver_euler_solve_implicit(FL_Solver_Euler *euler, F32 time_tar
   ipc_rank_barrier();
 
   F32 CFL_max     = 1000.0f;
-  F32 CFL_growth  = 1.03f;// 1.03f;
+  F32 CFL_growth  = 1.05f; // 1.03f; // 1.03f;
 
   // NOTE(cmat): Starting value.
-  static F32 CFL  = 0.1f;
+#if 1
+  static F32 CFL  = 1.1f;
+#else
+  F32 CFL = 1.0;
+#endif
 
   U64 clock_start = sys_performance_clock_now();
 
@@ -538,8 +542,13 @@ function F32 fl_solver_euler_solve_implicit(FL_Solver_Euler *euler, F32 time_tar
   F64 time        = 0;
   U64 iteration   = 0;
 
+#if 1
   static B32 residual_norm_init  = 0;
   static V3_F64 residual_norm_first = { 0, 0, 0 };
+#else
+  B32 residual_norm_init  = 0;
+  V3_F64 residual_norm_first = { 0, 0, 0 };
+#endif
 
   while (time < time_target) {
     F32 max_time_step = time_target - time;
