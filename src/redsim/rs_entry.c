@@ -33,6 +33,61 @@
 #include "rs_meteo.h"
 #include "rs_meteo.c"
 
+// NOTE(cmat): Meteorological state at a given elapsed real time, sampled from the hourly tables.
+// - Temperature + wind are instantaneous hh:00 readings -> interpolated linearly between the
+// - surrounding hours (wind as a *vector*, so direction changes sweep smoothly instead of jumping).
+// - Radiation is an hour average -> held constant over the hour. Sun position is computed exactly.
+typedef struct RS_Meteo_Sample {
+  F64               radiation_w_m2;
+  F64               temperature_c;
+  F64               wind_speed_m_s;        // NOTE(cmat): REAL wind speed (floored at min_wind_speed).
+  F64               wind_angle_math_rad;   // NOTE(cmat): direction wind blows TOWARD (math angle, CCW from +X).
+  F64               wind_dir_from_deg;     // NOTE(cmat): meteorological bearing the wind comes FROM (for logging).
+  RS_Solar_Position sun;
+} RS_Meteo_Sample;
+
+function RS_Meteo_Sample rs_meteo_sample_at(
+    RS_Meteo_Radiation_Table *radiation, RS_Meteo_Temperature_Table *temperature, RS_Meteo_Wind_Table *wind,
+    U32 start_year, U32 start_month, U32 start_day, U32 start_hour,
+    F64 latitude_deg, F64 longitude_deg, F64 min_wind_speed_m_s, F64 elapsed_seconds) {
+
+  F64 hour_floor = floor(elapsed_seconds / 3600.0);
+  F64 frac       = elapsed_seconds / 3600.0 - hour_floor;
+
+  RS_Sim_Time time_a   = rs_sim_time_from_elapsed(start_year, start_month, start_day, start_hour, hour_floor * 3600.0);
+  RS_Sim_Time time_b   = rs_sim_time_from_elapsed(start_year, start_month, start_day, start_hour, (hour_floor + 1.0) * 3600.0);
+  RS_Sim_Time time_now = rs_sim_time_from_elapsed(start_year, start_month, start_day, start_hour, elapsed_seconds);
+
+  RS_Meteo_Sample s = {0};
+
+  s.radiation_w_m2 = rs_meteo_radiation_lookup(radiation, time_now.year, time_now.month, time_now.day, time_now.hour);
+
+  F64 temp_a = rs_meteo_temperature_lookup(temperature, time_a.year, time_a.month, time_a.day, time_a.hour);
+  F64 temp_b = rs_meteo_temperature_lookup(temperature, time_b.year, time_b.month, time_b.day, time_b.hour);
+  s.temperature_c = (1.0 - frac) * temp_a + frac * temp_b;
+
+  F64 dir_a = 0.0, speed_a = 0.0, dir_b = 0.0, speed_b = 0.0;
+  rs_meteo_wind_lookup(wind, time_a.year, time_a.month, time_a.day, time_a.hour, &dir_a, &speed_a);
+  rs_meteo_wind_lookup(wind, time_b.year, time_b.month, time_b.day, time_b.hour, &dir_b, &speed_b);
+  speed_a = f64_max(speed_a, min_wind_speed_m_s);
+  speed_b = f64_max(speed_b, min_wind_speed_m_s);
+
+  F64 angle_a = rs_meteo_wind_angle_math_rad(dir_a);
+  F64 angle_b = rs_meteo_wind_angle_math_rad(dir_b);
+  F64 vx = (1.0 - frac) * speed_a * cos(angle_a) + frac * speed_b * cos(angle_b);
+  F64 vy = (1.0 - frac) * speed_a * sin(angle_a) + frac * speed_b * sin(angle_b);
+
+  s.wind_speed_m_s      = f64_max(sqrt(vx * vx + vy * vy), min_wind_speed_m_s);
+  s.wind_angle_math_rad = atan2(vy, vx);
+
+  // NOTE(cmat): bearing (deg CW from North) the wind blows toward = atan2(E, N); "from" is the opposite.
+  F64 toward_deg = atan2(vx, vy) * (180.0 / 3.14159265358979323846);
+  s.wind_dir_from_deg = fmod(toward_deg + 180.0 + 360.0, 360.0);
+
+  s.sun = rs_solar_position(latitude_deg, longitude_deg, time_now);
+  return s;
+}
+
 function void redsim_group_entry(void *user_data) {
   profiler_begin_function();
   log_zone_start("Thread Group Entry");
@@ -126,6 +181,15 @@ function void redsim_group_entry(void *user_data) {
   // - therefore the vector-interpolated blend used per-step below) meaningless/noisy.
   F64 madrid_min_wind_speed_m_s = 0.5;
 
+  // NOTE(cmat): Pseudo time-scaling. The flow solver ALWAYS runs at this fixed wind speed; the real
+  // - station wind speed is applied by (a) scaling the flow's simulated duration by (u_real / this), and
+  // - (b) scaling the velocity by the same factor when the scalar (NOx) solver reads it, so NOx stays
+  // - in true physical time (see fl_solver_scalar_set_velocity_scale).
+  F64 sim_wind_speed_m_s = 30.0;
+
+  // NOTE(cmat): Real-time length of one lockstep chunk (velocity, then NOx). Should divide 3600 s evenly.
+  F64 chunk_seconds = 10.0;
+
   // NOTE(cmat): Load the full-year meteorological station CSVs (radiation, temperature, wind).
   // - Loads on lane 0 and broadcasts internally, so this is safe to call from every lane.
   RS_Meteo_Radiation_Table   meteo_radiation   = rs_meteo_radiation_table_load  (&permanent_arena, str08_lit("madrid/3129_GLOBAL_RADIATION-2014.csv"));
@@ -142,6 +206,7 @@ function void redsim_group_entry(void *user_data) {
   F64 wind_dir_0_deg = 0.0, wind_speed_0_m_s = 0.0;
   rs_meteo_wind_lookup(&meteo_wind, sim_time_0.year, sim_time_0.month, sim_time_0.day, sim_time_0.hour, &wind_dir_0_deg, &wind_speed_0_m_s);
   wind_speed_0_m_s = f64_max(wind_speed_0_m_s, madrid_min_wind_speed_m_s);
+  (void)wind_speed_0_m_s; // NOTE(cmat): only the direction is used for the initial atm - speed is fixed, see sim_wind_speed_m_s.
 
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
@@ -167,7 +232,7 @@ function void redsim_group_entry(void *user_data) {
     .wind_d             = 0.f,
     .wind_z0            = 0.5f,    // open/low-vegetation terrain — bump toward 0.5-1.0 if this is a dense urban domain
     .wind_z_ref         = 25.f, // 25.f,    // NOTE(cmat): station anemometer height - 25 m, as given.
-    .wind_u_ref         = (F32)wind_speed_0_m_s, // NOTE(cmat): station speed_hh (tenths of m/s) -> m/s.
+    .wind_u_ref         = (F32)sim_wind_speed_m_s, // NOTE(cmat): fixed solver wind speed (pseudo time-scaling); real station speed only scales time in the main loop.
     .wind_z_cap         = 250.f,
   };
 
@@ -385,56 +450,54 @@ function void redsim_group_entry(void *user_data) {
   flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
 
   // NOTE(cmat): Simulate the full requested window - 2014-11-06 Thursday 00:00 through
-  // - 2014-11-30 Sunday 23:00 - which is exactly the `nox_ratios.len` hourly rows loaded
-  // - above (600 hours = 25 days * 24h). Iterated one hour at a time below: reinit velocity,
-  // - settle the flow, then freeze it and run NOx for the rest of the hour (see Phase A/B).
-  F64 sim_total_seconds    = (F64)nox_ratios.len * 3600.0;
-  F64 hour_seconds         = 3600.0;
-  F64 flow_settle_seconds  = 300.0; // NOTE(cmat): 5 minutes of flow-only settling per hour, per the new scheme below.
+  // - 2014-11-30 Sunday 23:00 - which is exactly the `nox_ratios.len` hourly rows loaded above.
+  // - Iterated in fixed-size REAL-time chunks (chunk_seconds, 10 s), in lockstep:
+  // -   1. update BCs for this chunk (T / wind direction interpolated between hourly readings)
+  // -   2. advance the velocity field (NOT re-initialized - it carries over from the previous
+  // -      chunk) by chunk_seconds * (real_wind / 30 m/s)   <- pseudo time-scaling
+  // -   3. freeze velocity and advance NOx by the full chunk_seconds of PHYSICAL time, reading the
+  // -      velocity scaled by (real_wind / 30 m/s) so it matches the real wind
+  F64 sim_total_seconds = (F64)nox_ratios.len * 3600.0;
+  F64 hour_seconds      = 3600.0;
+  U64 chunks_total      = (U64)(sim_total_seconds / chunk_seconds + 0.5);
+  U64 chunks_per_hour   = (U64)(hour_seconds      / chunk_seconds + 0.5);
+  if (chunks_per_hour == 0) { chunks_per_hour = 1; }
 
-  F32 time                = 0;
-  U64 last_exported_hour  = 0; // NOTE(cmat): hour 0 was already exported above (t=0 initial state).
+  F64 time = 0.0; // NOTE(cmat): elapsed REAL simulated seconds (not pseudo-scaled). Always re-derived from chunk_index, so no drift.
 
-  log_info("simulating %llu hours (%.0f s): %.0fs flow-settle (velocity reinitialized fresh each hour) "
-           "+ frozen-velocity NOx for the rest of the hour, exporting once per hour",
-      nox_ratios.len, sim_total_seconds, flow_settle_seconds);
+  log_info("simulating %llu hours (%.0f s) in %llu lockstep chunks of %.1f s real time: "
+           "velocity (pseudo-scaled time, solver wind fixed at %.1f m/s, field carried over) then NOx (physical time, velocity read scaled by u_real/%.1f), exporting once per hour",
+      nox_ratios.len, sim_total_seconds, chunks_total, chunk_seconds, sim_wind_speed_m_s, sim_wind_speed_m_s);
 
-  for (U64 hour_index = 0; hour_index < nox_ratios.len; hour_index += 1) {
-    F64 hour_start_seconds = (F64)hour_index * hour_seconds;
-    F64 hour_end_seconds   = hour_start_seconds + hour_seconds;
-    time = (F32)hour_start_seconds; // NOTE(cmat): re-anchor to the exact hour boundary every hour, instead of
-                                     // - letting F32 accumulation drift over 600 hours.
+  for (U64 chunk_index = 0; chunk_index < chunks_total; chunk_index += 1) {
+    F64 chunk_start_seconds = (F64)chunk_index * chunk_seconds;
+    F64 chunk_end_seconds   = chunk_start_seconds + chunk_seconds;
+    F64 chunk_mid_seconds   = chunk_start_seconds + 0.5 * chunk_seconds;
 
-    // NOTE(cmat): Re-derive this hour's atmospheric/radiation BC, once, up front. Unlike the
-    // - earlier per-step ramp attempt, no interpolation is needed here: the velocity field is
-    // - about to be fully reinitialized to exactly this BC below, so there's no previous flow
-    // - state left for a jump to be inconsistent *with* - that sidesteps the Riemann-invariant
-    // - farfield BC blowup entirely instead of smoothing over it.
-    RS_Sim_Time       sim_hour = rs_sim_time_from_elapsed(sim_start_year, sim_start_month, sim_start_day, sim_start_hour, hour_start_seconds);
-    RS_Solar_Position sun_hour = rs_solar_position(madrid_lat_deg, madrid_lon_deg, sim_hour);
+    // NOTE(cmat): Boundary conditions for this chunk. The velocity field is no longer reset, so the
+    // - farfield/atmospheric BC must change smoothly (a hard hourly jump in wind direction against an
+    // - existing flow state is what caused the earlier Riemann-invariant blowup). T and wind are
+    // - instantaneous hh:00 readings -> interpolated; radiation is an hour average -> held per hour.
+    RS_Meteo_Sample met = rs_meteo_sample_at(&meteo_radiation, &meteo_temperature, &meteo_wind,
+        sim_start_year, sim_start_month, sim_start_day, sim_start_hour,
+        madrid_lat_deg, madrid_lon_deg, madrid_min_wind_speed_m_s, chunk_mid_seconds);
 
-    F64 radiation_w_m2 = rs_meteo_radiation_lookup  (&meteo_radiation,   sim_hour.year, sim_hour.month, sim_hour.day, sim_hour.hour);
-    F64 temperature_c  = rs_meteo_temperature_lookup(&meteo_temperature, sim_hour.year, sim_hour.month, sim_hour.day, sim_hour.hour);
-    F64 wind_dir_deg = 0.0, wind_speed_m_s = 0.0;
-    rs_meteo_wind_lookup(&meteo_wind, sim_hour.year, sim_hour.month, sim_hour.day, sim_hour.hour, &wind_dir_deg, &wind_speed_m_s);
-    wind_speed_m_s = f64_max(wind_speed_m_s, madrid_min_wind_speed_m_s); // NOTE(cmat): floor away from near-zero station wind.
+    atm.temperature_ground = (F32)(met.temperature_c + 273.15);
+    atm.wind_angle         = (F32)met.wind_angle_math_rad;
+    atm.wind_u_ref         = (F32)sim_wind_speed_m_s; // NOTE(cmat): ALWAYS the fixed solver wind speed - the real speed only enters via time scaling below.
 
-    atm.temperature_ground = (F32)(temperature_c + 273.15);
-    atm.wind_angle          = (F32)rs_meteo_wind_angle_math_rad(wind_dir_deg);
-    atm.wind_u_ref          = (F32)wind_speed_m_s;
-
-    F64 sin_zenith_hour    = sqrt(f64_max(0.0, 1.0 - sun_hour.cos_zenith * sun_hour.cos_zenith));
-    V3F sun_direction_hour = v3f(
-      (F32)(sin_zenith_hour * cos(sun_hour.azimuth_math_rad)),
-      (F32)(sin_zenith_hour * sin(sun_hour.azimuth_math_rad)),
-      (F32)sun_hour.cos_zenith
+    F64 sin_zenith_now    = sqrt(f64_max(0.0, 1.0 - met.sun.cos_zenith * met.sun.cos_zenith));
+    V3F sun_direction_now = v3f(
+      (F32)(sin_zenith_now * cos(met.sun.azimuth_math_rad)),
+      (F32)(sin_zenith_now * sin(met.sun.azimuth_math_rad)),
+      (F32)met.sun.cos_zenith
     );
 
-    wall.solar_irradiance = (F32)radiation_w_m2;
-    wall.cos_zenith         = (F32)((sun_hour.cos_zenith > 0.001) ? sun_hour.cos_zenith : 0.001); // NOTE(cmat): clamp away from 0 - see the note on wall.cos_zenith's initial value above.
-    wall.sun_direction      = sun_direction_hour;
-    wall.temperature_min    = atm.temperature_ground - 15.f;
-    wall.temperature_max    = atm.temperature_ground + 40.f;
+    wall.solar_irradiance = (F32)met.radiation_w_m2;
+    wall.cos_zenith       = (F32)((met.sun.cos_zenith > 0.001) ? met.sun.cos_zenith : 0.001); // NOTE(cmat): clamp away from 0 - see the note on wall.cos_zenith's initial value above.
+    wall.sun_direction    = sun_direction_now;
+    wall.temperature_min  = atm.temperature_ground - 15.f;
+    wall.temperature_max  = atm.temperature_ground + 40.f;
 
     if (lane_index() == 0) {
       *fl_boundary_map_by_index(&boundary, 0) = (FL_Boundary) { .type = FL_Boundary_Type_Radiation_Wall,  .radiation_wall = wall };
@@ -443,67 +506,64 @@ function void redsim_group_entry(void *user_data) {
     }
     lane_barrier();
 
-    // NOTE(cmat): day_weight/emission_scale are keyed off nox_ratios' *hourly* rows, so they're
-    // - constant for the whole hour - compute the emission source once here instead of on every
-    // - sub-step below (that was harmless but pointless extra work before this hour-indexed
-    // - restructuring).
-    day_weight     = rs_nox_ratio_table_day_weight(&nox_ratios, hour_start_seconds);
+    // NOTE(cmat): Pseudo time-scaling. The flow solver always runs at 30 m/s, so covering the same
+    // - *distance* the real wind would cover in chunk_seconds takes chunk_seconds * (u_real / 30) of
+    // - flow-solver time. e.g. 10 s at 1.0 m/s -> 0.3333 s.
+    F64 speed_ratio  = met.wind_speed_m_s / sim_wind_speed_m_s;
+    F64 flow_seconds = chunk_seconds * speed_ratio;
+
+    // NOTE(cmat): NOx runs in true physical time. Instead, the scalar solver multiplies the (30 m/s)
+    // - velocity it reads by speed_ratio, which turns it back into the real wind.
+    F64 nox_seconds = chunk_seconds;
+    fl_solver_scalar_set_velocity_scale(&scalar_solver, (F32)speed_ratio);
+
+    // NOTE(cmat): day_weight is keyed off nox_ratios' hourly rows, so the emission source is constant
+    // - for the whole hour - only rebuild it at the start of each hour.
+    day_weight     = rs_nox_ratio_table_day_weight(&nox_ratios, chunk_start_seconds);
     emission_scale = day_weight * emission_const;
-    if (lane_index() == 0) {
-      for Iter_Index(it_cell, mesh.cells.len) {
+    if ((chunk_index % chunks_per_hour) == 0) {
+      for Iter_Range(it_cell, lane_range(mesh.cells.len)) {
         scalar_emission[it_cell] = (F32)(scalar_emission_unit[it_cell] * emission_scale);
       }
+      lane_barrier();
+      fl_solver_scalar_source_set(&scalar_solver, scalar_emission);
     }
-    lane_barrier();
-    fl_solver_scalar_source_set(&scalar_solver, scalar_emission);
 
-    // NOTE(cmat): Reinitialize the velocity field fresh from this hour's atmosphere - a brand
-    // - new flow "simulation" for the hour, exactly as requested. Only flow_1 is touched here;
-    // - the scalar (NOx) field is deliberately left alone so concentration keeps accumulating
-    // - continuously across hours instead of being reset.
-    fl_state_set_inner_from_atmospheric(&solver.flow_1, &mesh, &ref_scale, &material, &atm);
-    solver.has_prev_step = 0;
-
-    lane_barrier();
-
-    // ---- Phase A: settle the flow only (no scalar solve) for flow_settle_seconds ----
-    // NOTE(cmat): fl_solver_euler_solve_implicit takes the *total* requested solve time and
-    // - subdivides internally (its own CFL-limited sub-steps) rather than us chunking it from
-    // - out here - so this is a single call for the whole settling window, not a loop.
+    // ---- Phase A: advance the (persistent) velocity field by flow_seconds of solver time ----
+    // NOTE(cmat): No fl_state_set_inner_from_atmospheric / has_prev_step reset here anymore - the
+    // - flow state simply continues from the previous chunk.
     fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 0);
 
-    F32 flow_time_step = fl_solver_euler_solve_implicit(&solver, fl_scale_normalize_time(&ref_scale, (F32)flow_settle_seconds));
+    F32 flow_time_step = fl_solver_euler_solve_implicit(&solver, fl_scale_normalize_time(&ref_scale, (F32)flow_seconds));
     if (!(flow_time_step > 0.f)) { // NOTE(cmat): `!(x > 0.f)` also catches NaN, unlike `x <= 0.f`.
-      log_info("flow solver returned a non-positive/NaN time step (%f) settling hour %llu - stopping early",
-                flow_time_step, hour_index);
+      log_info("flow solver returned a non-positive/NaN time step (%f) at t=%.0f s (chunk %llu) - stopping early",
+                flow_time_step, chunk_start_seconds, chunk_index);
       goto sim_loop_done;
     }
-    time += fl_scale_denormalize_time(&ref_scale, flow_time_step);
 
-    // NOTE(cmat): One more halo/gradient refresh so the frozen velocity field the scalar solver
-    // - reads below (fl_solver_scalar_init took solver.flow_1's momentum/density arrays by
-    // - pointer) is fully up to date after the settling call above.
+    // NOTE(cmat): Refresh halo/gradients so the frozen velocity the scalar solver reads (it holds
+    // - pointers into solver.flow_1) is fully up to date.
     fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 0);
 
-    // ---- Phase B: freeze velocity, run the scalar (NOx) solve for the rest of the hour ----
-    // NOTE(cmat): Same reasoning as Phase A - fl_solver_scalar_solve_implicit takes the total
-    // - requested solve time (it's unconditionally-stable implicit, hence no returned/partial
-    // - time_step to check - unlike the euler solve above, it has no failure mode to report),
-    // - so one call for the remainder of the hour, not a manual 10s-chunk loop.
-    F64 nox_seconds = hour_end_seconds - (F64)time;
+    // ---- Phase B: freeze velocity, advance NOx by chunk_seconds of physical time (velocity read scaled) ----
     fl_solver_scalar_solve_implicit(&scalar_solver, fl_scale_normalize_time(&ref_scale, (F32)nox_seconds));
-    time = (F32)hour_end_seconds; // NOTE(cmat): snap exactly to the hour boundary rather than trusting F32 accumulation.
 
-    // ---- Export once per hour, at the end of this hour's frozen-velocity NOx phase ----
-    last_exported_hour = hour_index + 1;
+    time = chunk_end_seconds;
 
-    fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
-    flf_ensight_export_flow(&export, &ref_scale, time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
+    // ---- Export once per simulated hour ----
+    if (((chunk_index + 1) % chunks_per_hour) == 0) {
+      U64 hours_done = (chunk_index + 1) / chunks_per_hour;
 
-    log_info("exported hour %llu/%llu (t=%.0f s, day_weight=%.6e, T=%.1fK, GHI=%.0fW/m2, wind=%.1fm/s@%.0fdeg_from, cos_zenith=%.3f)",
-             last_exported_hour, nox_ratios.len, (F64)time, day_weight,
-             atm.temperature_ground, wall.solar_irradiance, atm.wind_u_ref, wind_dir_deg, wall.cos_zenith);
+      fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
+      flf_ensight_export_flow(&export, &ref_scale, (F32)time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
+
+      log_info("exported hour %llu/%llu (t=%.0f s, day_weight=%.6e, T=%.1fK, GHI=%.0fW/m2, real wind=%.1fm/s@%.0fdeg_from (solver %.1fm/s, ratio %.3f), cos_zenith=%.3f)",
+               hours_done, nox_ratios.len, time, day_weight,
+               atm.temperature_ground, wall.solar_irradiance, met.wind_speed_m_s, met.wind_dir_from_deg,
+               sim_wind_speed_m_s, speed_ratio, wall.cos_zenith);
+    }
   }
+
 
 sim_loop_done:;
 

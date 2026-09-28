@@ -357,6 +357,13 @@ typedef struct FL_Solver_Scalar {
   F32 *rho_velocity_z;
   F32 *rho;
 
+  // NOTE(pseudo-time-scaling): constant multiplier applied to the velocity every time it is READ from
+  // the arrays above (u = velocity_scale * rho_v / rho). The external flow field is computed at a fixed
+  // reference wind speed (e.g. 30 m/s); setting this to u_real / u_ref makes the scalar see the real
+  // wind while the scalar solve stays in true physical time. The velocity arrays are never modified.
+  // Defaults to 1 (no scaling). Use fl_solver_scalar_set_velocity_scale() to change it.
+  F32  velocity_scale;
+
   FL_Scalar_State  phi_1;   // current iterate (RK working state / Newton iterate)
   FL_Scalar_State  phi_2;   // RK stage buffer, or Q^n snapshot for BDF2
   FL_Scalar_State  phi_0;   // Q^{n-1}, needed once BDF2 kicks in
@@ -713,6 +720,7 @@ function void fl_solver_scalar_init(FL_Solver_Scalar *solver, FL_Scalar_Boundary
   solver->rho_velocity_z = rho_velocity_z;
   solver->rho            = rho;
   solver->scale          = scale;
+  solver->velocity_scale = 1.f;
 
   fl_scalar_state_init(&solver->phi_1,    material, mesh, 1, arena);
   fl_scalar_state_init(&solver->phi_2,    material, mesh, 1, arena);
@@ -758,6 +766,16 @@ function void fl_solver_scalar_init(FL_Solver_Scalar *solver, FL_Scalar_Boundary
 
   // NEW: allocate + zero solver->source, sized mesh->cells.len.
   fl_solver_scalar_source_init(solver, mesh, arena);
+}
+
+// Sets the constant multiplier applied to the external velocity field whenever the scalar solver
+// reads it (see FL_Solver_Scalar::velocity_scale). Safe to call from every lane.
+function void fl_solver_scalar_set_velocity_scale(FL_Solver_Scalar *solver, F32 velocity_scale) {
+  lane_barrier(); // NOTE: make sure no lane is still inside a solve reading the old value.
+  if (lane_index() == 0) {
+    solver->velocity_scale = velocity_scale;
+  }
+  lane_barrier();
 }
 
 // ------------------------------------------------------------
@@ -813,7 +831,7 @@ function void fl_solver_scalar_compute_ghost(FL_Solver_Scalar *solver, FL_Scalar
 
     UG_Cell_Faces *faces = &mesh->cells.faces[cell_parent_index];
     V3F normal   = v3f(faces->normal_x[face_parent_index], faces->normal_y[face_parent_index], faces->normal_z[face_parent_index]);
-    V3F velocity = v3f_mul(f32_div_safe(1.f, solver->rho[cell_parent_index]), v3f(solver->rho_velocity_x[cell_parent_index], solver->rho_velocity_y[cell_parent_index], solver->rho_velocity_z[cell_parent_index]));
+    V3F velocity = v3f_mul(solver->velocity_scale * f32_div_safe(1.f, solver->rho[cell_parent_index]), v3f(solver->rho_velocity_x[cell_parent_index], solver->rho_velocity_y[cell_parent_index], solver->rho_velocity_z[cell_parent_index]));
     F32 vn       = v3f_dot(velocity, normal);
 
     V3F ghost_center = mesh->cells.center[phi_ghost_index];
@@ -935,7 +953,7 @@ function void fl_solver_scalar_compute_residual_range(FL_Solver_Scalar *solver, 
 
     V3F cell_center   = mesh->cells.center[it_cell];
     F32 cell_volume   = mesh->cells.volume[it_cell];
-    V3F velocity_left = v3f_mul(f32_div_safe(1.f, solver->rho[it_cell]), v3f(solver->rho_velocity_x[it_cell], solver->rho_velocity_y[it_cell], solver->rho_velocity_z[it_cell]));
+    V3F velocity_left = v3f_mul(solver->velocity_scale * f32_div_safe(1.f, solver->rho[it_cell]), v3f(solver->rho_velocity_x[it_cell], solver->rho_velocity_y[it_cell], solver->rho_velocity_z[it_cell]));
 
     // NOTE(compressibility): discrete divergence of the face-averaged
     // velocity field through this cell -- sum(area * vn) over the closed
@@ -976,7 +994,7 @@ function void fl_solver_scalar_compute_residual_range(FL_Solver_Scalar *solver, 
         phi_face_right   = phi_right_center;
       }
 
-      V3F velocity_right = v3f_mul(f32_div_safe(1.f, solver->rho[adjacent]), v3f(solver->rho_velocity_x[adjacent], solver->rho_velocity_y[adjacent], solver->rho_velocity_z[adjacent]));
+      V3F velocity_right = v3f_mul(solver->velocity_scale * f32_div_safe(1.f, solver->rho[adjacent]), v3f(solver->rho_velocity_x[adjacent], solver->rho_velocity_y[adjacent], solver->rho_velocity_z[adjacent]));
       V3F right_center   = mesh->cells.center[adjacent];
       F32 right_volume   = mesh->cells.volume[adjacent];
 
