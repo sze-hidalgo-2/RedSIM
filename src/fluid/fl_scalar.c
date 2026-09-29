@@ -73,13 +73,13 @@
 
 #if 0
 #define SCALAR_NEWTON_GMRES_M     10     // Krylov restart length
-#define SCALAR_NEWTON_GMRES_TOL   1e-2f  // relative -- inexact linear solve is fine
+#define SCALAR_NEWTON_GMRES_TOL   1e-1f  // relative -- inexact linear solve is fine
 #define SCALAR_NEWTON_MAX_ITERS   5
-#define SCALAR_NEWTON_TOL         1e-2f  // relative drop in ||N(phi)|| to accept a Newton step
+#define SCALAR_NEWTON_TOL         1e-1f  // relative drop in ||N(phi)|| to accept a Newton step
 #define SCALAR_LIMITER_K          5.f
 #else
 
-// TODO(cmat): Experimental
+// NOTE(cmat): Testing
 #define SCALAR_NEWTON_GMRES_M     10     // Krylov restart length
 #define SCALAR_NEWTON_GMRES_TOL   1e-1f  // relative -- inexact linear solve is fine
 #define SCALAR_NEWTON_MAX_ITERS   5
@@ -1540,7 +1540,14 @@ function F32 fl_solver_scalar_solve_implicit(FL_Solver_Scalar *solver, F32 time_
 
   ipc_rank_barrier();
 
-  F32 CFL_max    = 10.0f;
+#if 0
+  // F32 CFL_max    = 10.0f;
+#elif 0
+  F32 CFL_max = 100.f;
+#else
+  F32 CFL_max = 250.f;
+#endif
+
   F32 CFL_growth = 1.03f;
   F32 CFL_min    = 0.05f;
   static F32 CFL = 0.1f;

@@ -19,7 +19,7 @@ force_inline function F32 fl_boundary_atmosphere_density(F32 z, FL_Boundary_Atmo
 }
 force_inline function V3F fl_boundary_atmosphere_velocity(F32 z, FL_Boundary_Atmospheric *atm) {
   V3F result = { };
-  F32 z_capped = f32_min(z, atm->wind_z_cap);   // new field, e.g. top of surface/boundary layer (~200-300m)
+  F32 z_capped = z; // f32_min(z, atm->wind_z_cap);   // new field, e.g. top of surface/boundary layer (~200-300m)
   F32 wind_magnitude = logf(f32_max(z_capped - atm->wind_d, atm->wind_z0) / atm->wind_z0);
   wind_magnitude = f32_div_safe(wind_magnitude, logf((atm->wind_z_ref - atm->wind_d) / atm->wind_z0));
   wind_magnitude = atm->wind_u_ref * wind_magnitude;

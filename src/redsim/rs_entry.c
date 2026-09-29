@@ -179,7 +179,7 @@ function void redsim_group_entry(void *user_data) {
   // NOTE(cmat): Floor for station-reported wind speed, applied wherever a station reading
   // - feeds a wind direction vector below - a near-zero speed makes the direction (and
   // - therefore the vector-interpolated blend used per-step below) meaningless/noisy.
-  F64 madrid_min_wind_speed_m_s = 0.5;
+  F64 madrid_min_wind_speed_m_s = 0.1f; // 0.5;
 
   // NOTE(cmat): Pseudo time-scaling. The flow solver ALWAYS runs at this fixed wind speed; the real
   // - station wind speed is applied by (a) scaling the flow's simulated duration by (u_real / this), and
