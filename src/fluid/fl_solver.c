@@ -180,6 +180,7 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
     euler->primitive_v_x               = arena_push_count(arena, F32, euler->flow_1.inner_len + euler->flow_1.halo_len + euler->flow_1.ghost_len);
     euler->primitive_v_y               = arena_push_count(arena, F32, euler->flow_1.inner_len + euler->flow_1.halo_len + euler->flow_1.ghost_len);
     euler->primitive_v_z               = arena_push_count(arena, F32, euler->flow_1.inner_len + euler->flow_1.halo_len + euler->flow_1.ghost_len);
+    euler->eddy_viscosity              = arena_push_count(arena, F32, euler->flow_1.inner_len + euler->flow_1.halo_len + euler->flow_1.ghost_len);
 
     euler->cell_spectral_inviscid_sum  = arena_push_count(arena, F64, mesh->cells.len);
     euler->cell_spectral_viscous_sum   = arena_push_count(arena, F64, mesh->cells.len);
@@ -201,6 +202,12 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
   lane_broadcast_ptr(&euler->primitive_v_x,      0);
   lane_broadcast_ptr(&euler->primitive_v_y,      0);
   lane_broadcast_ptr(&euler->primitive_v_z,      0);
+  lane_broadcast_ptr(&euler->eddy_viscosity,     0);
+
+  for Iter_Range(it, lane_range(euler->flow_1.inner_len + euler->flow_1.halo_len + euler->flow_1.ghost_len)) {
+    euler->eddy_viscosity[it] = 0.f;
+  }
+  lane_barrier();
 
   lane_broadcast_ptr(&euler->cell_time_step,              0);
   lane_broadcast_ptr(&euler->lane_time_step,              0);
@@ -219,6 +226,36 @@ function void fl_solver_euler_init(FL_Solver_Euler *euler, FL_Boundary_Map *boun
  
 
   fl_solver_euler_init_implicit(euler, material, mesh, arena);
+}
+
+// NOTE(cmat): Fills euler->eddy_viscosity (kinematic nu_t, non-dimensional) for every inner AND halo cell from
+// - euler->gradient, using the same SGS model / constants / filter width (cell volume) as the viscous flux.
+// - Call after fl_solver_euler_compute_residual (which computes and exchanges the halo gradients) whenever the
+// - velocity field has changed. Ghost entries are never written (stay 0). Safe to call from every lane.
+function void fl_solver_euler_compute_eddy_viscosity(FL_Solver_Euler *euler) {
+  profiler_begin_function();
+
+  UG_Mesh           *mesh     = euler->mesh;
+  FL_Gradient_State *grad     = &euler->gradient;
+  FL_Material       *material = &euler->flow_1.material;
+  U64                len      = mesh->cells.len + mesh->halos.len;
+
+  lane_barrier();
+  for Iter_Range(it, lane_range(len)) {
+    V3F du = v3f(grad->v1.grad_x[it], grad->v1.grad_y[it], grad->v1.grad_z[it]);
+    V3F dv = v3f(grad->v2.grad_x[it], grad->v2.grad_y[it], grad->v2.grad_z[it]);
+    V3F dw = v3f(grad->v3.grad_x[it], grad->v3.grad_y[it], grad->v3.grad_z[it]);
+    F32 volume = mesh->cells.volume[it];
+
+#if FL_LES_USE_SMAGORINSKY
+    euler->eddy_viscosity[it] = fl_flux_smagorinsky_eddy_viscosity(du, dv, dw, volume, material);
+#else
+    euler->eddy_viscosity[it] = fl_flux_wale_eddy_viscosity(du, dv, dw, volume, material);
+#endif
+  }
+  lane_barrier();
+
+  profiler_end_function();
 }
 
 function void fl_solver_compute_ghost(FL_Solver_Euler *euler, FL_State *state) {
@@ -366,7 +403,7 @@ function void fl_solver_compute_residual_range(FL_Solver_Euler *euler, FL_State 
       F32 right_volume = mesh->cells.volume[adjacent];
 
       FL_Flux flux_inviscid   = fl_flux_hllc                    (left_state, right_state, normal, state->material.gamma);
-#if 1
+#if FL_LES_USE_SMAGORINSKY
       FL_Flux flux_viscous    = fl_flux_viscous_smagorinsky_LES (left_primitive, left_grad, cell_center, right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, cell_volume, right_volume, &state->material);
 #else
       FL_Flux flux_viscous    = fl_flux_viscous_wale_LES (left_primitive, left_grad, cell_center, right_primitive, right_grad, mesh->cells.center[adjacent], normal, area, cell_volume, right_volume, &state->material);

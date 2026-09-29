@@ -214,6 +214,98 @@ force_inline function V3F fl_flux_grad_correct(V3F grad_avg, F32 phi_L, F32 phi_
   return grad_corrected;
 }
 
+// NOTE(cmat): Single source of truth for the SGS eddy viscosity (KINEMATIC, nu_t = mu_sgs / rho, non-dimensional).
+// - Used both by the viscous flux functions below (per face) and by fl_solver_euler_compute_eddy_viscosity
+// - (per cell, handed to the scalar solver), so the flow and the scalar always see the same model, constants
+// - and filter width. `volume` is the cell volume (per cell) or the face-averaged volume (per face).
+force_inline function F32 fl_flux_smagorinsky_eddy_viscosity(V3F du, V3F dv, V3F dw, F32 volume, FL_Material *material) {
+  // NOTE(cmat): Smagorinsky SGS large-eddy viscosity. Strain-rate tensor S_ij:
+  F32 Sxx = du.x;
+  F32 Syy = dv.y;
+  F32 Szz = dw.z;
+  F32 Sxy = .5f * (du.y + dv.x);
+  F32 Sxz = .5f * (du.z + dw.x);
+  F32 Syz = .5f * (dv.z + dw.y);
+  F32 S_mag2 = 2.f * (Sxx*Sxx + Syy*Syy + Szz*Szz) + 4.f * (Sxy*Sxy + Sxz*Sxz + Syz*Syz);
+
+  // EDIT(cmat/jfnk): regularize sqrt() so its derivative stays finite as S_mag2 -> 0.
+  // sqrt(x) has infinite slope at x = 0, which forward-difference JFNK will sample directly
+  // in near-quiescent / near-uniform flow regions. Floor scales with local strain so it
+  // doesn't distort the physical SGS viscosity anywhere the flow is actually straining.
+  F32 S_mag2_floor = 1e-20f * (S_mag2 + 1.f);
+  F32 S_mag        = f32_sqrt(S_mag2 + S_mag2_floor);
+
+  // NOTE(cmat): Filter width from cell volume.
+  F32 delta = cbrtf(volume);
+  F32 nu_t  = material->smagorinsky_cs2 * (delta * delta) * S_mag;
+  return nu_t;
+}
+
+force_inline function F32 fl_flux_wale_eddy_viscosity(V3F du, V3F dv, V3F dw, F32 volume, FL_Material *material) {
+  // NOTE(cmat/wale): Full velocity gradient tensor g_ij = d(u_i)/d(x_j).
+  // Row i = velocity component, column j = spatial direction.
+  F32 g11 = du.x, g12 = du.y, g13 = du.z;
+  F32 g21 = dv.x, g22 = dv.y, g23 = dv.z;
+  F32 g31 = dw.x, g32 = dw.y, g33 = dw.z;
+
+  // NOTE(cmat/wale): g^2 = g * g, matrix product (not elementwise).
+  F32 g2_11 = g11*g11 + g12*g21 + g13*g31;
+  F32 g2_12 = g11*g12 + g12*g22 + g13*g32;
+  F32 g2_13 = g11*g13 + g12*g23 + g13*g33;
+  F32 g2_21 = g21*g11 + g22*g21 + g23*g31;
+  F32 g2_22 = g21*g12 + g22*g22 + g23*g32;
+  F32 g2_23 = g21*g13 + g22*g23 + g23*g33;
+  F32 g2_31 = g31*g11 + g32*g21 + g33*g31;
+  F32 g2_32 = g31*g12 + g32*g22 + g33*g32;
+  F32 g2_33 = g31*g13 + g32*g23 + g33*g33;
+
+  F32 trace_g2       = g2_11 + g2_22 + g2_33;
+  F32 trace_g2_third = trace_g2 * (1.f / 3.f);
+
+  // NOTE(cmat/wale): Traceless symmetric part of g^2 — this is S^d_ij.
+  F32 Sd_xx = g2_11 - trace_g2_third;
+  F32 Sd_yy = g2_22 - trace_g2_third;
+  F32 Sd_zz = g2_33 - trace_g2_third;
+  F32 Sd_xy = .5f * (g2_12 + g2_21);
+  F32 Sd_xz = .5f * (g2_13 + g2_31);
+  F32 Sd_yz = .5f * (g2_23 + g2_32);
+
+  F32 SdijSdij = Sd_xx*Sd_xx + Sd_yy*Sd_yy + Sd_zz*Sd_zz
+               + 2.f * (Sd_xy*Sd_xy + Sd_xz*Sd_xz + Sd_yz*Sd_yz);
+
+  // NOTE(cmat/wale): Resolved strain-rate tensor S_ij (plain double-contraction
+  // convention, i.e. S_ij*S_ij with no factor of 2 folded in — this is what
+  // the WALE formula wants, unlike the Smagorinsky |S| convention elsewhere).
+  F32 Sxx = du.x;
+  F32 Syy = dv.y;
+  F32 Szz = dw.z;
+  F32 Sxy = .5f * (du.y + dv.x);
+  F32 Sxz = .5f * (du.z + dw.x);
+  F32 Syz = .5f * (dv.z + dw.y);
+  F32 SijSij = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.f * (Sxy*Sxy + Sxz*Sxz + Syz*Syz);
+
+  // NOTE(cmat/wale): x^1.5, x^2.5, x^1.25 via sqrt products instead of powf —
+  // cheaper, and this is on the residual/JVP hot path (once per face, every
+  // RK stage and every Newton/GMRES Jacobian-vector product).
+  F32 SijSij_sqrt   = f32_sqrt(SijSij);
+  F32 SdijSdij_sqrt = f32_sqrt(SdijSdij);
+  F32 Sd_num = SdijSdij * SdijSdij_sqrt;                     // SdijSdij^1.5
+  F32 S_den  = SijSij * SijSij * SijSij_sqrt;                // SijSij^2.5
+  F32 Sd_den = SdijSdij * f32_sqrt(SdijSdij_sqrt);           // SdijSdij^1.25  (FIXED: was SdijSdij_sqrt * sqrt(SdijSdij_sqrt) = x^0.75)
+
+  // NOTE(cmat/wale): Guards literal 0/0 in perfectly uniform flow. Unlike
+  // Smagorinsky's sqrt(S_mag2) floor, this isn't masking a derivative
+  // singularity — the WALE expression is already C1 down to zero — it's
+  // purely there so JFNK's forward difference never divides by an exact zero.
+  F32 wale_eps = 1e-24f;
+
+  // NOTE(cmat): Filter width from cell volume, matching the Smagorinsky model's convention.
+  F32 delta = cbrtf(volume);
+
+  F32 nu_t = (material->wale_cw * material->wale_cw) * (delta * delta) * Sd_num / (S_den + Sd_den + wale_eps);
+  return nu_t;
+}
+
 force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive, V3F left_grad[5], V3F left_center,
                                                               V5F right_primitive, V3F right_grad[5], V3F right_center,
                                                               V3F normal, F32 area, F32 left_volume, F32 right_volume, FL_Material *material) {
@@ -236,41 +328,11 @@ force_inline function FL_Flux fl_flux_viscous_smagorinsky_LES(V5F left_primitive
 
   F32 div_u = du.x + dv.y + dw.z;
 
-  // NOTE(cmat): Smagorinsky SGS large-eddy viscosity.
-  // - We compute the strain-rate tensor S_ij here.
-#if 0
-  F32 Sxx = du.x;
-  F32 Syy = dv.y;
-  F32 Szz = dw.z;
-  F32 Sxy = .5f * (du.y + dv.x);
-  F32 Sxz = .5f * (du.z + dw.x);
-  F32 Syz = .5f * (dv.z + dw.y);
-  F32 S_mag2 = 2.f * (Sxx*Sxx + Syy*Syy + Szz*Szz) + 4.f * (Sxy*Sxy + Sxz*Sxz + Syz*Syz);
-  F32 S_mag  = f32_sqrt(S_mag2);
-
-#else
-  // NOTE(cmat): Smagorinsky SGS large-eddy viscosity.
-  F32 Sxx = du.x;
-  F32 Syy = dv.y;
-  F32 Szz = dw.z;
-  F32 Sxy = .5f * (du.y + dv.x);
-  F32 Sxz = .5f * (du.z + dw.x);
-  F32 Syz = .5f * (dv.z + dw.y);
-  F32 S_mag2 = 2.f * (Sxx*Sxx + Syy*Syy + Szz*Szz) + 4.f * (Sxy*Sxy + Sxz*Sxz + Syz*Syz);
-
-  // EDIT(cmat/jfnk): regularize sqrt() so its derivative stays finite as S_mag2 -> 0.
-  // sqrt(x) has infinite slope at x = 0, which forward-difference JFNK will sample directly
-  // in near-quiescent / near-uniform flow regions. Floor scales with local strain so it
-  // doesn't distort the physical SGS viscosity anywhere the flow is actually straining.
-  F32 S_mag2_floor = 1e-20f * (S_mag2 + 1.f);
-  F32 S_mag        = f32_sqrt(S_mag2 + S_mag2_floor);
-#endif
-
-  // NOTE(cmat): We filter width from local cell volume.
+  // NOTE(cmat): Face density and face-averaged filter volume; nu_t comes from the shared helper.
   F32 rho_face   = .5f * (left_primitive.x1 + right_primitive.x1);
   F32 volume_avg = .5f * (left_volume + right_volume);
-  F32 delta      = cbrtf(volume_avg);
-  F32 mu_sgs     = rho_face * material->smagorinsky_cs2 * (delta * delta) * S_mag;
+  F32 nu_t       = fl_flux_smagorinsky_eddy_viscosity(du, dv, dw, volume_avg, material);
+  F32 mu_sgs     = rho_face * nu_t;
 
   F32 mu_eff = material->viscosity_mu + mu_sgs;
 
@@ -334,70 +396,10 @@ force_inline function FL_Flux fl_flux_viscous_wale_LES(V5F left_primitive, V3F l
 
   F32 div_u = du.x + dv.y + dw.z;
 
-  // NOTE(cmat/wale): Full velocity gradient tensor g_ij = d(u_i)/d(x_j).
-  // Row i = velocity component, column j = spatial direction.
-  F32 g11 = du.x, g12 = du.y, g13 = du.z;
-  F32 g21 = dv.x, g22 = dv.y, g23 = dv.z;
-  F32 g31 = dw.x, g32 = dw.y, g33 = dw.z;
-
-  // NOTE(cmat/wale): g^2 = g * g, matrix product (not elementwise).
-  F32 g2_11 = g11*g11 + g12*g21 + g13*g31;
-  F32 g2_12 = g11*g12 + g12*g22 + g13*g32;
-  F32 g2_13 = g11*g13 + g12*g23 + g13*g33;
-  F32 g2_21 = g21*g11 + g22*g21 + g23*g31;
-  F32 g2_22 = g21*g12 + g22*g22 + g23*g32;
-  F32 g2_23 = g21*g13 + g22*g23 + g23*g33;
-  F32 g2_31 = g31*g11 + g32*g21 + g33*g31;
-  F32 g2_32 = g31*g12 + g32*g22 + g33*g32;
-  F32 g2_33 = g31*g13 + g32*g23 + g33*g33;
-
-  F32 trace_g2       = g2_11 + g2_22 + g2_33;
-  F32 trace_g2_third = trace_g2 * (1.f / 3.f);
-
-  // NOTE(cmat/wale): Traceless symmetric part of g^2 — this is S^d_ij.
-  F32 Sd_xx = g2_11 - trace_g2_third;
-  F32 Sd_yy = g2_22 - trace_g2_third;
-  F32 Sd_zz = g2_33 - trace_g2_third;
-  F32 Sd_xy = .5f * (g2_12 + g2_21);
-  F32 Sd_xz = .5f * (g2_13 + g2_31);
-  F32 Sd_yz = .5f * (g2_23 + g2_32);
-
-  F32 SdijSdij = Sd_xx*Sd_xx + Sd_yy*Sd_yy + Sd_zz*Sd_zz
-               + 2.f * (Sd_xy*Sd_xy + Sd_xz*Sd_xz + Sd_yz*Sd_yz);
-
-  // NOTE(cmat/wale): Resolved strain-rate tensor S_ij (plain double-contraction
-  // convention, i.e. S_ij*S_ij with no factor of 2 folded in — this is what
-  // the WALE formula wants, unlike the Smagorinsky |S| convention elsewhere).
-  F32 Sxx = du.x;
-  F32 Syy = dv.y;
-  F32 Szz = dw.z;
-  F32 Sxy = .5f * (du.y + dv.x);
-  F32 Sxz = .5f * (du.z + dw.x);
-  F32 Syz = .5f * (dv.z + dw.y);
-  F32 SijSij = Sxx*Sxx + Syy*Syy + Szz*Szz + 2.f * (Sxy*Sxy + Sxz*Sxz + Syz*Syz);
-
-  // NOTE(cmat/wale): x^1.5, x^2.5, x^1.25 via sqrt products instead of powf —
-  // cheaper, and this is on the residual/JVP hot path (once per face, every
-  // RK stage and every Newton/GMRES Jacobian-vector product).
-  F32 SijSij_sqrt   = f32_sqrt(SijSij);
-  F32 SdijSdij_sqrt = f32_sqrt(SdijSdij);
-  F32 Sd_num = SdijSdij * SdijSdij_sqrt;                     // SdijSdij^1.5
-  F32 S_den  = SijSij * SijSij * SijSij_sqrt;                // SijSij^2.5
-  F32 Sd_den = SdijSdij * f32_sqrt(SdijSdij_sqrt);           // SdijSdij^1.25  (FIXED: was SdijSdij_sqrt * sqrt(SdijSdij_sqrt) = x^0.75)
-
-  // NOTE(cmat/wale): Guards literal 0/0 in perfectly uniform flow. Unlike
-  // Smagorinsky's sqrt(S_mag2) floor, this isn't masking a derivative
-  // singularity — the WALE expression is already C1 down to zero — it's
-  // purely there so JFNK's forward difference never divides by an exact zero.
-  F32 wale_eps = 1e-24f;
-
-  // NOTE(cmat): Filter width from local cell volume, and face density,
-  // matching the Smagorinsky model's convention.
+  // NOTE(cmat): Face density and face-averaged filter volume; nu_t comes from the shared helper.
   F32 rho_face   = .5f * (left_primitive.x1 + right_primitive.x1);
   F32 volume_avg = .5f * (left_volume + right_volume);
-  F32 delta      = cbrtf(volume_avg);
-
-  F32 nu_t   = (material->wale_cw * material->wale_cw) * (delta * delta) * Sd_num / (S_den + Sd_den + wale_eps);
+  F32 nu_t       = fl_flux_wale_eddy_viscosity(du, dv, dw, volume_avg, material);
   F32 mu_sgs = rho_face * nu_t;
   F32 mu_eff = material->viscosity_mu + mu_sgs;
 

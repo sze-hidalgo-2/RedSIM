@@ -17,6 +17,13 @@
 #endif
 
 
+// NOTE(cmat): LES SGS model used by BOTH the viscous flux (fl_solver_euler_compute_residual_range) and the
+// - per-cell eddy viscosity handed to the scalar solver (fl_solver_euler_compute_eddy_viscosity).
+// - 1 = Smagorinsky, 0 = WALE.
+#ifndef FL_LES_USE_SMAGORINSKY
+#define FL_LES_USE_SMAGORINSKY 1
+#endif
+
 typedef struct FL_Solver_Euler {
   UG_Mesh            *mesh;
   FL_Boundary_Map    *boundary;
@@ -58,6 +65,11 @@ typedef struct FL_Solver_Euler {
   F32                *halo_gradient_limiter_receive_dat;
   U64                 halo_gradient_limiter_send_len;
   F32                *halo_gradient_limiter_send_dat;
+
+  // NOTE(cmat): Per-cell SGS kinematic eddy viscosity nu_t = mu_sgs / rho (NON-dimensional, flow solver
+  // - units), sized inner+halo+ghost (ghost entries stay 0). Filled by fl_solver_euler_compute_eddy_viscosity
+  // - from the current velocity gradients using the same model as the viscous flux. Read by the scalar solver.
+  F32                *eddy_viscosity;
 
   // TODO(cmat): Temporary.
   V3F                 gravity;

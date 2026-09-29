@@ -33,6 +33,48 @@
 #include "rs_meteo.h"
 #include "rs_meteo.c"
 
+// NOTE(cmat): Build-time switch for how the real station wind speed enters the simulation.
+// -
+// - RS_PSEUDO_TIME_SCALING 1 (pseudo-scaling):
+// -     The flow solver ALWAYS runs at a fixed wind speed (30 m/s, sim_wind_speed_m_s). The real speed is
+// -     applied by (a) scaling the flow's simulated duration by (u_real / 30) and (b) scaling the velocity
+// -     the scalar (NOx) solver reads by the same factor, so NOx stays in true physical time.
+// -
+// - RS_PSEUDO_TIME_SCALING 0 (real values):
+// -     No scaling at all. atm.wind_u_ref is the real (interpolated, floored) station wind speed, the flow
+// -     is advanced by exactly chunk_seconds, and the scalar solver reads the velocity unscaled (ratio 1).
+// -
+// - Override from the build line, e.g. -DRS_PSEUDO_TIME_SCALING=0
+#ifndef RS_PSEUDO_TIME_SCALING
+#define RS_PSEUDO_TIME_SCALING 0
+#endif
+
+// NOTE(cmat): Scalar (NOx) diffusivity model.
+// -
+// - RS_LES_SCALAR_DIFFUSIVITY 1: D_eff = D_molecular + velocity_scale * nu_t / Sc_t, per face. nu_t is the flow
+// -     solver's OWN per-cell SGS eddy viscosity (solver.eddy_viscosity, filled by
+// -     fl_solver_euler_compute_eddy_viscosity with the same model, Cs and filter width as the viscous flux,
+// -     FL_LES_USE_SMAGORINSKY in fl_solver.h picks Smagorinsky/WALE for both) and handed to the scalar solver
+// -     by pointer. velocity_scale is speed_ratio with pseudo-scaling (the flow's strain rate is computed at
+// -     30 m/s) and 1 in real-values mode; the molecular part is never scaled.
+// - RS_LES_SCALAR_DIFFUSIVITY 0: molecular diffusivity only (no turbulent mixing in the scalar).
+#ifndef RS_LES_SCALAR_DIFFUSIVITY
+#define RS_LES_SCALAR_DIFFUSIVITY 1
+#endif
+
+// NOTE(cmat): Molecular diffusivity of NOx (NO2 ~1.5e-5 m^2/s, NO ~2e-5 m^2/s in air at ambient T/p).
+// - Negligible next to the turbulent part, but it is the correct floor in quiescent regions.
+#ifndef RS_NOX_MOLECULAR_DIFFUSIVITY
+#define RS_NOX_MOLECULAR_DIFFUSIVITY 1.5e-5f
+#endif
+
+// NOTE(cmat): Turbulent Schmidt number for the scalar. 0.7 is the common choice for atmospheric / street-canyon
+// - dispersion (0.9 would match the Pr_t used for heat in the flow solver). Dispersion results are
+// - sensitive to it: lower Sc_t -> more turbulent mixing -> lower peak concentrations.
+#ifndef RS_SCHMIDT_TURBULENT
+#define RS_SCHMIDT_TURBULENT 0.7f
+#endif
+
 // NOTE(cmat): Meteorological state at a given elapsed real time, sampled from the hourly tables.
 // - Temperature + wind are instantaneous hh:00 readings -> interpolated linearly between the
 // - surrounding hours (wind as a *vector*, so direction changes sweep smoothly instead of jumping).
@@ -181,11 +223,13 @@ function void redsim_group_entry(void *user_data) {
   // - therefore the vector-interpolated blend used per-step below) meaningless/noisy.
   F64 madrid_min_wind_speed_m_s = 0.1f; // 0.5;
 
-  // NOTE(cmat): Pseudo time-scaling. The flow solver ALWAYS runs at this fixed wind speed; the real
+  // NOTE(cmat): [RS_PSEUDO_TIME_SCALING == 1 only] Pseudo time-scaling. The flow solver ALWAYS runs at this fixed wind speed; the real
   // - station wind speed is applied by (a) scaling the flow's simulated duration by (u_real / this), and
   // - (b) scaling the velocity by the same factor when the scalar (NOx) solver reads it, so NOx stays
   // - in true physical time (see fl_solver_scalar_set_velocity_scale).
+#if RS_PSEUDO_TIME_SCALING
   F64 sim_wind_speed_m_s = 30.0;
+#endif
 
   // NOTE(cmat): Real-time length of one lockstep chunk (velocity, then NOx). Should divide 3600 s evenly.
   F64 chunk_seconds = 10.0;
@@ -206,7 +250,7 @@ function void redsim_group_entry(void *user_data) {
   F64 wind_dir_0_deg = 0.0, wind_speed_0_m_s = 0.0;
   rs_meteo_wind_lookup(&meteo_wind, sim_time_0.year, sim_time_0.month, sim_time_0.day, sim_time_0.hour, &wind_dir_0_deg, &wind_speed_0_m_s);
   wind_speed_0_m_s = f64_max(wind_speed_0_m_s, madrid_min_wind_speed_m_s);
-  (void)wind_speed_0_m_s; // NOTE(cmat): only the direction is used for the initial atm - speed is fixed, see sim_wind_speed_m_s.
+  (void)wind_speed_0_m_s; // NOTE(cmat): with pseudo-scaling only the direction is used for the initial atm (speed is fixed, see sim_wind_speed_m_s).
 
   FL_Solver_Euler solver    = {};
   FL_Boundary_Map boundary  = {};
@@ -232,7 +276,11 @@ function void redsim_group_entry(void *user_data) {
     .wind_d             = 0.f,
     .wind_z0            = 0.5f,    // open/low-vegetation terrain — bump toward 0.5-1.0 if this is a dense urban domain
     .wind_z_ref         = 25.f, // 25.f,    // NOTE(cmat): station anemometer height - 25 m, as given.
+#if RS_PSEUDO_TIME_SCALING
     .wind_u_ref         = (F32)sim_wind_speed_m_s, // NOTE(cmat): fixed solver wind speed (pseudo time-scaling); real station speed only scales time in the main loop.
+#else
+    .wind_u_ref         = (F32)wind_speed_0_m_s,   // NOTE(cmat): real station wind speed at t=0 (floored at madrid_min_wind_speed_m_s).
+#endif
     .wind_z_cap         = 250.f,
   };
 
@@ -345,10 +393,11 @@ function void redsim_group_entry(void *user_data) {
   lane_barrier();
 
   FL_Scalar_Material scalar_material = {};
+  // NOTE(cmat): Molecular part only. The turbulent (LES) part is added per face inside the scalar solver.
   fl_scalar_material_init(&scalar_material,
-      fl_scale_normalize_diffusivity(&ref_scale, 0.001f),
-      fl_scale_normalize_diffusivity(&ref_scale, 0.001f),
-      fl_scale_normalize_diffusivity(&ref_scale, 0.001f));
+      fl_scale_normalize_diffusivity(&ref_scale, RS_NOX_MOLECULAR_DIFFUSIVITY),
+      fl_scale_normalize_diffusivity(&ref_scale, RS_NOX_MOLECULAR_DIFFUSIVITY),
+      fl_scale_normalize_diffusivity(&ref_scale, RS_NOX_MOLECULAR_DIFFUSIVITY));
 
   FL_Solver_Scalar scalar_solver = {};
   fl_solver_scalar_init(
@@ -363,6 +412,12 @@ function void redsim_group_entry(void *user_data) {
     &permanent_arena,
     ref_scale
   );
+
+#if RS_LES_SCALAR_DIFFUSIVITY
+  // NOTE(cmat): Hand the flow solver's per-cell eddy viscosity to the scalar solver (alias, read-only). It is
+  // - refreshed once per chunk in the main loop, right before every scalar solve.
+  fl_solver_scalar_set_eddy_viscosity(&scalar_solver, solver.eddy_viscosity, (F32)RS_SCHMIDT_TURBULENT);
+#endif
 
   // fl_solver_scalar_set_uniform(&scalar_solver, 0.001f);
   fl_solver_scalar_set_uniform(&scalar_solver, 0.0f);
@@ -465,9 +520,15 @@ function void redsim_group_entry(void *user_data) {
 
   F64 time = 0.0; // NOTE(cmat): elapsed REAL simulated seconds (not pseudo-scaled). Always re-derived from chunk_index, so no drift.
 
+#if RS_PSEUDO_TIME_SCALING
   log_info("simulating %llu hours (%.0f s) in %llu lockstep chunks of %.1f s real time: "
            "velocity (pseudo-scaled time, solver wind fixed at %.1f m/s, field carried over) then NOx (physical time, velocity read scaled by u_real/%.1f), exporting once per hour",
       nox_ratios.len, sim_total_seconds, chunks_total, chunk_seconds, sim_wind_speed_m_s, sim_wind_speed_m_s);
+#else
+  log_info("simulating %llu hours (%.0f s) in %llu lockstep chunks of %.1f s real time: "
+           "velocity (real time, real station wind speed, field carried over) then NOx (real time, velocity unscaled), exporting once per hour",
+      nox_ratios.len, sim_total_seconds, chunks_total, chunk_seconds);
+#endif
 
   for (U64 chunk_index = 0; chunk_index < chunks_total; chunk_index += 1) {
     F64 chunk_start_seconds = (F64)chunk_index * chunk_seconds;
@@ -484,7 +545,18 @@ function void redsim_group_entry(void *user_data) {
 
     atm.temperature_ground = (F32)(met.temperature_c + 273.15);
     atm.wind_angle         = (F32)met.wind_angle_math_rad;
-    atm.wind_u_ref         = (F32)sim_wind_speed_m_s; // NOTE(cmat): ALWAYS the fixed solver wind speed - the real speed only enters via time scaling below.
+
+    // NOTE(cmat): Solver wind speed vs. speed ratio (the only place the two modes differ).
+    // - pseudo: solver runs at the fixed sim_wind_speed_m_s, speed_ratio = u_real / sim_wind_speed_m_s.
+    // - real:   solver runs at the real wind speed,           speed_ratio = 1 (no time/velocity scaling).
+#if RS_PSEUDO_TIME_SCALING
+    F64 solver_wind_speed_m_s = sim_wind_speed_m_s;
+    F64 speed_ratio           = met.wind_speed_m_s / sim_wind_speed_m_s;
+#else
+    F64 solver_wind_speed_m_s = met.wind_speed_m_s;
+    F64 speed_ratio           = 1.0;
+#endif
+    atm.wind_u_ref         = (F32)solver_wind_speed_m_s;
 
     F64 sin_zenith_now    = sqrt(f64_max(0.0, 1.0 - met.sun.cos_zenith * met.sun.cos_zenith));
     V3F sun_direction_now = v3f(
@@ -506,10 +578,10 @@ function void redsim_group_entry(void *user_data) {
     }
     lane_barrier();
 
-    // NOTE(cmat): Pseudo time-scaling. The flow solver always runs at 30 m/s, so covering the same
-    // - *distance* the real wind would cover in chunk_seconds takes chunk_seconds * (u_real / 30) of
-    // - flow-solver time. e.g. 10 s at 1.0 m/s -> 0.3333 s.
-    F64 speed_ratio  = met.wind_speed_m_s / sim_wind_speed_m_s;
+    // NOTE(cmat): Pseudo time-scaling (RS_PSEUDO_TIME_SCALING == 1). The flow solver always runs at 30 m/s,
+    // - so covering the same *distance* the real wind would cover in chunk_seconds takes
+    // - chunk_seconds * (u_real / 30) of flow-solver time. e.g. 10 s at 1.0 m/s -> 0.3333 s.
+    // - With RS_PSEUDO_TIME_SCALING == 0, speed_ratio is 1 so flow_seconds == chunk_seconds.
     F64 flow_seconds = chunk_seconds * speed_ratio;
 
     // NOTE(cmat): NOx runs in true physical time. Instead, the scalar solver multiplies the (30 m/s)
@@ -546,6 +618,12 @@ function void redsim_group_entry(void *user_data) {
     fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 0);
 
     // ---- Phase B: freeze velocity, advance NOx by chunk_seconds of physical time (velocity read scaled) ----
+#if RS_LES_SCALAR_DIFFUSIVITY
+    // NOTE(cmat): Velocity and its gradients (incl. halos) were just refreshed by the residual call above and
+    // - stay frozen for the whole scalar step, so the per-cell SGS eddy viscosity is computed once here, by the
+    // - flow solver itself. The scalar multiplies it by velocity_scale (= speed_ratio, set above).
+    fl_solver_euler_compute_eddy_viscosity(&solver);
+#endif
     fl_solver_scalar_solve_implicit(&scalar_solver, fl_scale_normalize_time(&ref_scale, (F32)nox_seconds));
 
     time = chunk_end_seconds;
@@ -557,10 +635,17 @@ function void redsim_group_entry(void *user_data) {
       fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
       flf_ensight_export_flow(&export, &ref_scale, (F32)time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
 
-      log_info("exported hour %llu/%llu (t=%.0f s, day_weight=%.6e, T=%.1fK, GHI=%.0fW/m2, real wind=%.1fm/s@%.0fdeg_from (solver %.1fm/s, ratio %.3f), cos_zenith=%.3f)",
+#if RS_LES_SCALAR_DIFFUSIVITY
+      {
+        F32 eddy_max_nd = fl_solver_scalar_eddy_diffusivity_max(&scalar_solver);
+        log_info("scalar diffusivity: molecular %.2e m2/s, max eddy D_t %.3f m2/s (Sc_t %.2f)",
+                 (F64)RS_NOX_MOLECULAR_DIFFUSIVITY, (F64)fl_scale_denormalize_diffusivity(&ref_scale, eddy_max_nd), (F64)RS_SCHMIDT_TURBULENT);
+      }
+#endif
+      log_info("exported hour %llu/%llu (t=%.0f s, day_weight=%.6e, T=%.1fK, GHI=%.0fW/m2, real wind=%.1fm/s@%.0fdeg_from (solver %.1fm/s, ratio %.3f, pseudo-scaling %s), cos_zenith=%.3f)",
                hours_done, nox_ratios.len, time, day_weight,
                atm.temperature_ground, wall.solar_irradiance, met.wind_speed_m_s, met.wind_dir_from_deg,
-               sim_wind_speed_m_s, speed_ratio, wall.cos_zenith);
+               solver_wind_speed_m_s, speed_ratio, RS_PSEUDO_TIME_SCALING ? "ON" : "OFF", wall.cos_zenith);
     }
   }
 

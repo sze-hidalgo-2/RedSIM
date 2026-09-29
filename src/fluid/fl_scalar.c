@@ -407,6 +407,18 @@ typedef struct FL_Solver_Scalar {
 
   F32 *source;
 
+  // NOTE(LES): ALIAS (not owned) to the flow solver's per-cell kinematic SGS eddy viscosity nu_t
+  // (FL_Solver_Euler::eddy_viscosity, non-dimensional, sized inner+halo+ghost). NULL = no turbulent diffusion
+  // (molecular diffusivities only). Bind with fl_solver_scalar_set_eddy_viscosity().
+  // - Total diffusivity at a face = material D (molecular, per axis)
+  // -                             + velocity_scale * nu_t_face / Sc_t          (isotropic, turbulent)
+  // - nu_t_face = average of the two adjacent cells (ghost faces use the inner cell's value).
+  // - velocity_scale multiplies nu_t on purpose: nu_t ~ |S| ~ velocity, and the flow field is computed at a
+  // - fixed reference wind speed, so nu_t of the real wind is velocity_scale * nu_t(flow). This is the same
+  // - factor the scalar applies to the velocity, so the Peclet number stays right. (1 = no pseudo-scaling.)
+  F32 *eddy_viscosity;
+  F32  turbulent_schmidt;
+
   FL_Scale         scale;
 } FL_Solver_Scalar;
 
@@ -721,6 +733,8 @@ function void fl_solver_scalar_init(FL_Solver_Scalar *solver, FL_Scalar_Boundary
   solver->rho            = rho;
   solver->scale          = scale;
   solver->velocity_scale = 1.f;
+  solver->eddy_viscosity     = 0;
+  solver->turbulent_schmidt  = 0.7f;
 
   fl_scalar_state_init(&solver->phi_1,    material, mesh, 1, arena);
   fl_scalar_state_init(&solver->phi_2,    material, mesh, 1, arena);
@@ -776,6 +790,35 @@ function void fl_solver_scalar_set_velocity_scale(FL_Solver_Scalar *solver, F32 
     solver->velocity_scale = velocity_scale;
   }
   lane_barrier();
+}
+
+// Binds the flow solver's per-cell SGS eddy viscosity (FL_Solver_Euler::eddy_viscosity) and sets the turbulent
+// Schmidt number. Pass eddy_viscosity = 0 to disable turbulent diffusion. The array is only read, never
+// written, and must stay alive; refresh its contents with fl_solver_euler_compute_eddy_viscosity whenever the
+// velocity field changes. Safe to call from every lane.
+function void fl_solver_scalar_set_eddy_viscosity(FL_Solver_Scalar *solver, F32 *eddy_viscosity, F32 turbulent_schmidt) {
+  lane_barrier();
+  if (lane_index() == 0) {
+    solver->eddy_viscosity    = eddy_viscosity;
+    solver->turbulent_schmidt = turbulent_schmidt;
+  }
+  lane_barrier();
+}
+
+function F32 fl_solver_scalar_global_min(FL_Solver_Scalar *solver, F32 lane_local_min); // NOTE: defined below (global reductions).
+
+// Largest turbulent diffusivity D_t = velocity_scale * nu_t / Sc_t over all owned cells (non-dimensional; use
+// fl_scale_denormalize_diffusivity for m^2/s). For logging / sanity checks. Call from every lane.
+function F32 fl_solver_scalar_eddy_diffusivity_max(FL_Solver_Scalar *solver) {
+  F32 local_max = 0.f;
+  if (solver->eddy_viscosity) {
+    for Iter_Range(it, lane_range(solver->mesh->cells.len)) {
+      local_max = f32_max(local_max, solver->eddy_viscosity[it]);
+    }
+    local_max *= solver->velocity_scale / solver->turbulent_schmidt;
+  }
+  F32 result = -fl_solver_scalar_global_min(solver, -local_max); // NOTE: max via min of the negated value.
+  return result;
 }
 
 // ------------------------------------------------------------
@@ -940,7 +983,12 @@ function void fl_solver_scalar_compute_residual_range(FL_Solver_Scalar *solver, 
   }
 
   UG_Mesh *mesh = solver->mesh;
-  V3F D = v3f(state->material.diffusivity_x, state->material.diffusivity_y, state->material.diffusivity_z);
+
+  // NOTE(LES): D_molecular is the per-axis material diffusivity; the isotropic turbulent part is added per
+  // face below: D_face = D_molecular + eddy_coeff * nu_t_face.
+  V3F D_molecular = v3f(state->material.diffusivity_x, state->material.diffusivity_y, state->material.diffusivity_z);
+  F32 *eddy_nu    = solver->eddy_viscosity;
+  F32  eddy_coeff = eddy_nu ? solver->velocity_scale * f32_div_safe(1.f, solver->turbulent_schmidt) : 0.f;
 
   for Iter_Range(it_range, lane_range(range_len)) {
     U64            it_cell       = range.min + it_range;
@@ -999,6 +1047,15 @@ function void fl_solver_scalar_compute_residual_range(FL_Solver_Scalar *solver, 
       F32 right_volume   = mesh->cells.volume[adjacent];
 
       FL_Flux_Scalar_Advective flux_adv  = fl_flux_scalar_advective(phi_face_left, phi_face_right, velocity_left, velocity_right, normal);
+      // NOTE(LES): turbulent diffusivity from the flow solver's per-cell nu_t (ghost faces: inner cell's value).
+      F32 eddy_face = 0.f;
+      if (eddy_nu) {
+        F32 nu_left = eddy_nu[it_cell];
+        F32 nu_face = is_ghost ? nu_left : 0.5f * (nu_left + eddy_nu[adjacent]);
+        eddy_face   = eddy_coeff * nu_face;
+      }
+      V3F D = v3f(D_molecular.x + eddy_face, D_molecular.y + eddy_face, D_molecular.z + eddy_face);
+
       FL_Flux_Scalar_Diffusive flux_diff = fl_flux_scalar_diffusive(phi_left, phi_right_center, grad_left, grad_right, cell_center, right_center, normal, area, cell_volume, right_volume, D);
 
       F32 flux_total = flux_adv.flux - flux_diff.flux;
