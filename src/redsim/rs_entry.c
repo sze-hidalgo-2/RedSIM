@@ -461,24 +461,41 @@ function void redsim_group_entry(void *user_data) {
   // - scalar_emission_unit is shared (broadcast above), so accumulating from multiple lanes
   // - here without atomics would race. NOT scaled by day_weight here - day_weight changes
   // - with simulated time, so that scaling is applied every step in the loop below instead.
+  // NOTE(cmat): The mesh is partitioned across ranks, so every rank only owns a piece of the domain and only
+  // - its own cells can receive emission. Each rank traces every line against ITS OWN cells only; the pieces of
+  // - a line that live in other partitions are picked up by those ranks (disjoint partitions -> no double
+  // - counting). Hence "lines not touching this rank" below is NOT "missed the mesh".
+  // - RS_EMISSION_TRACE_STEP_M: marching step (meters) used to find where a line enters this rank's cells.
+#ifndef RS_EMISSION_TRACE_STEP_M
+#define RS_EMISSION_TRACE_STEP_M 0.5
+#endif
   if (lane_index() == 0) {
-    U32 lines_missed = 0;
+    U32 lines_outside_rank = 0;
+    U32 lines_touched      = 0;
+    F64 covered_fraction   = 0.0;
+    F32 trace_step         = (F32)(RS_EMISSION_TRACE_STEP_M / (F64)ref_scale.length);
     for Iter_Index(it_line, emission_lines.len) {
       CSV_Emission_Line *line = &emission_lines.dat[it_line];
 
       V3F a = v3f_mul(f32_div_safe(1.f, ref_scale.length), v3f_sub(v3f_sub(line->a, v3f(441918, 4474610, 0)), ref_scale.offset));
       V3F b = v3f_mul(f32_div_safe(1.f, ref_scale.length), v3f_sub(v3f_sub(line->b, v3f(441918, 4474610, 0)), ref_scale.offset));
 
-      UG_Segment_Trace trace = ug_mesh_trace_segment(&permanent_arena, &mesh, a, b);
-      if (trace.len == 0) { lines_missed += 1; continue; }
+      UG_Segment_Trace trace = ug_mesh_trace_segment_marched(&permanent_arena, &mesh, a, b, trace_step);
+      if (trace.len == 0) { lines_outside_rank += 1; continue; }
+      lines_touched += 1;
 
       for Iter_Index(it_hit, trace.len) {
         UG_Segment_Hit *hit    = &trace.dat[it_hit];
         F32             weight = hit->t_exit - hit->t_enter; // NOTE(cmat): fraction of the line inside this cell.
         scalar_emission_unit[hit->cell] += (F32)(line->value_1 * weight);
+        covered_fraction                += (F64)weight;
       }
     }
-    log_info("emission lines: %llu loaded, %u missed the mesh entirely", emission_lines.len, lines_missed);
+    // NOTE(cmat): Sanity check - add "covered" over ALL ranks: it should come out close to the number of lines
+    // - loaded (every line fully traced). A clearly smaller total means part of the lines lies in solid/outside
+    // - any cell (e.g. under a building, or below the ground at emission_z).
+    log_info("emission lines (this rank's partition only): %llu loaded, %u touch this rank, %u do not; covered line-length sum %.2f (sum over all ranks should be ~%llu)",
+        emission_lines.len, lines_touched, lines_outside_rank, covered_fraction, emission_lines.len);
   }
   lane_barrier();
 

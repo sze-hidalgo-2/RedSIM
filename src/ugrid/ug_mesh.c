@@ -1992,3 +1992,119 @@ function UG_Segment_Trace ug_mesh_trace_segment(Arena *arena, UG_Mesh *mesh, V3F
   profiler_end_function();
   return result;
 }
+
+// ------------------------------------------------------------
+// #-- Segment Trace for PARTITIONED meshes (marched entry + face-adjacency walk)
+//
+// NOTE(cmat): ug_mesh_trace_segment above only ever starts ONE walk, at the point where the segment enters the
+// - GLOBAL domain bounds (spatial_grid.bounds_* are global), and stops at the first halo/ghost face. On a rank
+// - that only owns a piece of the domain this means: a segment whose start is not inside THIS rank's cells is
+// - reported as empty even if it crosses this rank's partition further along, and a segment that starts here
+// - is only traced up to the partition boundary. The part of the segment that lives in any other partition
+// - is therefore never traced by anybody.
+// - This version marches along the segment in steps of `step` (same units as a/b, i.e. normalized mesh
+// - coordinates), and every time the sample lands in one of THIS rank's cells it walks through the contiguous
+// - run of local cells (back-dating the entry to the true cell face crossing). Partitions are disjoint, so
+// - summing every rank's hits reproduces the whole segment with no double counting; the only part not seen is
+// - solid (no cells: buildings, below ground) or farther than one `step` from any local sample.
+// - t_enter/t_exit are fractions of the WHOLE segment a->b, same convention as ug_mesh_trace_segment.
+
+function F32 ug_mesh_trace_walk(UG_Mesh *mesh, V3F a, V3F d, U32 cell, F32 t_enter, F32 t_end, UG_Segment_Hit *hits, U64 *hits_len) {
+  for (;;) {
+    Assert(*hits_len < mesh->cells.len, "segment trace exceeded cell count - numerical loop?");
+
+    UG_Cell_Faces *faces = &mesh->cells.faces[cell];
+
+    F32 t_exit    = t_end;
+    U32 exit_face = UG_Spatial_Grid_Invalid_Index;
+
+    for Iter_Index(it_face, 4) {
+      V3F n     = v3f(faces->normal_x[it_face], faces->normal_y[it_face], faces->normal_z[it_face]);
+      V3F fc    = v3f(faces->center_x[it_face], faces->center_y[it_face], faces->center_z[it_face]);
+      F32 denom = v3f_dot(d, n);
+      if (denom <= 1e-12f) { continue; }
+
+      F32 dist_a = v3f_dot(v3f_sub(a, fc), n);
+      F32 t_hit  = -dist_a / denom;
+
+      if (t_hit > t_enter + 1e-7f && t_hit < t_exit) {
+        t_exit    = t_hit;
+        exit_face = it_face;
+      }
+    }
+
+    hits[*hits_len] = (UG_Segment_Hit) { .cell = cell, .t_enter = t_enter, .t_exit = t_exit };
+    *hits_len += 1;
+
+    if (exit_face == UG_Spatial_Grid_Invalid_Index || t_exit >= t_end - 1e-7f) { return t_exit; }
+
+    U32 adjacent = faces->adjacent[exit_face];
+    if (adjacent >= mesh->cells.len) { return t_exit; } // NOTE(cmat): halo/ghost face - leaves this partition (or hits a wall).
+
+    cell    = adjacent;
+    t_enter = t_exit;
+  }
+}
+
+function UG_Segment_Trace ug_mesh_trace_segment_marched(Arena *arena, UG_Mesh *mesh, V3F a, V3F b, F32 step) {
+  V3F d       = v3f_sub(b, a);
+  F32 seg_len = v3f_len(d);
+
+  if (seg_len < 1e-9f) { return ug_mesh_trace_segment(arena, mesh, a, b); } // NOTE(cmat): degenerate - just locate A.
+
+  profiler_begin_function();
+  Arena_Temp scratch = scratch_start(arena);
+  UG_Segment_Trace result = {0};
+
+  Range3_F32 bounds = range3_f32(mesh->spatial_grid.bounds_min, mesh->spatial_grid.bounds_max);
+  F32 t_clip_min, t_clip_max;
+  if (!ug_segment_clip_to_bounds(a, d, bounds, &t_clip_min, &t_clip_max)) {
+    scratch_end(&scratch);
+    profiler_end_function();
+    return result;
+  }
+
+  F32 dt = f32_max(step / seg_len, 1e-6f);
+
+  UG_Segment_Hit *hits_scratch = arena_push_count(scratch.arena, UG_Segment_Hit, mesh->cells.len);
+  U64             hits_len     = 0;
+
+  F32 t          = t_clip_min;
+  F32 t_prev_end = t_clip_min;
+  while (t <= t_clip_max) {
+    V3F p    = v3f_add(a, v3f_mul(t, d));
+    U32 cell = ug_mesh_spatial_grid_locate(mesh, p);
+
+    if (cell == UG_Spatial_Grid_Invalid_Index || (hits_len > 0 && hits_scratch[hits_len - 1].cell == cell)) {
+      t += dt;
+      continue;
+    }
+
+    // NOTE(cmat): Back-date the entry to where the segment really crossed into this cell: the latest
+    // - crossing of a face it enters through (dot(d, n) < 0), bounded by the sample t and the previous piece.
+    UG_Cell_Faces *faces   = &mesh->cells.faces[cell];
+    F32            t_enter = t_prev_end;
+    for Iter_Index(it_face, 4) {
+      V3F n     = v3f(faces->normal_x[it_face], faces->normal_y[it_face], faces->normal_z[it_face]);
+      V3F fc    = v3f(faces->center_x[it_face], faces->center_y[it_face], faces->center_z[it_face]);
+      F32 denom = v3f_dot(d, n);
+      if (denom >= -1e-12f) { continue; }
+      F32 t_hit = -v3f_dot(v3f_sub(a, fc), n) / denom;
+      t_enter   = f32_max(t_enter, f32_min(t_hit, t));
+    }
+
+    F32 t_walk_end = ug_mesh_trace_walk(mesh, a, d, cell, t_enter, t_clip_max, hits_scratch, &hits_len);
+    t_prev_end     = t_walk_end;
+    t              = f32_max(t_walk_end, t) + 0.25f * dt;
+  }
+
+  if (hits_len > 0) {
+    result.len = hits_len;
+    result.dat = arena_push_count(arena, UG_Segment_Hit, hits_len);
+    memory_copy(result.dat, hits_scratch, hits_len * sizeof(UG_Segment_Hit));
+  }
+
+  scratch_end(&scratch);
+  profiler_end_function();
+  return result;
+}
