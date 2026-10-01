@@ -519,7 +519,7 @@ function void redsim_group_entry(void *user_data) {
 
   // NOTE(cmat): Compute current gradient + residual for variables using the gradient.
   fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
-  flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
+  flf_ensight_export_flow(&export, &ref_scale, 0.0f, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi, solver.eddy_viscosity);
 
   // NOTE(cmat): Simulate the full requested window - 2014-11-06 Thursday 00:00 through
   // - 2014-11-30 Sunday 23:00 - which is exactly the `nox_ratios.len` hourly rows loaded above.
@@ -650,7 +650,7 @@ function void redsim_group_entry(void *user_data) {
       U64 hours_done = (chunk_index + 1) / chunks_per_hour;
 
       fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
-      flf_ensight_export_flow(&export, &ref_scale, (F32)time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi);
+      flf_ensight_export_flow(&export, &ref_scale, (F32)time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi, solver.eddy_viscosity);
 
 #if RS_LES_SCALAR_DIFFUSIVITY
       {
