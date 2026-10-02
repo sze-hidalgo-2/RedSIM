@@ -121,11 +121,11 @@ function void rs_probes_locate(RS_Probe_Array *probes, UG_Mesh *mesh, Arena *are
   if (lane_index() == 0) {
     F32 inv_length = f32_div_safe(1.f, scale->length);
     F32 step       = (F32)(search_step_m / (F64)scale->length);
-    U64 located    = 0;
 
     for (U64 it = 0; it < probes->len; it += 1) {
       RS_Probe *probe = &probes->dat[it];
       probe->cell     = -1;
+      probe->claims   = 0;
 
       // NOTE(cmat): Same transform as the emission lines (their UTM offset is already baked into the probe file).
       V3F p = v3f_mul(inv_length, v3f_sub(probe->position, scale->offset));
@@ -148,37 +148,38 @@ function void rs_probes_locate(RS_Probe_Array *probes, UG_Mesh *mesh, Arena *are
           }
         }
       }
-
-      if (probe->cell >= 0) { located += 1; }
     }
+  }
+  lane_barrier();
 
-    log_info("probes: %llu of %llu located in this rank's cells", located, probes->len);
+  // NOTE(cmat): Collective: how many ranks found each probe. Normally exactly 1; 0 means it is outside the fluid
+  // - (inside a building / above the domain); >1 only if it sits exactly on a partition face.
+  U64 located = 0;
+  for (U64 it = 0; it < probes->len; it += 1) {
+    F64 total  = ipc_rank_sum_f64(probes->dat[it].cell >= 0 ? 1.0 : 0.0);
+    U32 claims = (U32)(total + 0.5);
+    if (lane_index() == 0) { probes->dat[it].claims = claims; }
+    if (claims > 0) { located += 1; }
+  }
+  lane_barrier();
 
-    // NOTE(cmat): With a single rank "not located" really means outside the fluid (inside a building / above the domain).
-    if (ipc_rank_count() == 1) {
-      for (U64 it = 0; it < probes->len; it += 1) {
-        if (probes->dat[it].cell < 0) {
-          log_info("probe %S (%.3f, %.3f, %.3f) is not inside any mesh cell - its column will be empty",
-                   probes->dat[it].name, (F64)probes->dat[it].position.x, (F64)probes->dat[it].position.y, (F64)probes->dat[it].position.z);
-        }
+  if (lane_index() == 0 && ipc_rank_index() == 0) {
+    log_info("probes: %llu of %llu located in the mesh (all ranks)", located, probes->len);
+    for (U64 it = 0; it < probes->len; it += 1) {
+      if (probes->dat[it].claims == 0) {
+        log_info("probe %S (%.3f, %.3f, %.3f) is not inside any mesh cell - its column will be empty",
+                 probes->dat[it].name, (F64)probes->dat[it].position.x, (F64)probes->dat[it].position.y, (F64)probes->dat[it].position.z);
       }
     }
   }
 }
 
 // ------------------------------------------------------------
-// #-- Hourly CSV
+// #-- Hourly CSV (single file, written by rank 0)
 
-function void rs_probes_csv_open(RS_Probe_Writer *writer, RS_Probe_Array *probes, const char *stem) {
+function void rs_probes_csv_open(RS_Probe_Writer *writer, RS_Probe_Array *probes, const char *path) {
   writer->file = 0;
-  if (lane_index() == 0) {
-    char path[256];
-    if (ipc_rank_count() > 1) {
-      snprintf(path, sizeof(path), "%s_rank%llu.csv", stem, (unsigned long long)ipc_rank_index());
-    } else {
-      snprintf(path, sizeof(path), "%s.csv", stem);
-    }
-
+  if (lane_index() == 0 && ipc_rank_index() == 0) {
     writer->file = fopen(path, "wb");
     if (!writer->file) {
       log_info("probes: could not open \"%s\" for writing - probe CSV disabled", path);
@@ -200,14 +201,25 @@ function void rs_probes_csv_write_row(RS_Probe_Writer *writer, RS_Probe_Array *p
     fprintf(writer->file, "%llu,%.0f,%04u-%02u-%02uT%02u:00:00Z",
             (unsigned long long)hour_index, elapsed_seconds,
             (unsigned)time.year, (unsigned)time.month, (unsigned)time.day, (unsigned)time.hour);
+  }
 
-    for (U64 it = 0; it < probes->len; it += 1) {
-      if (probes->dat[it].cell >= 0) {
-        fprintf(writer->file, ",%.6e", (double)phi[probes->dat[it].cell]);
+  for (U64 it = 0; it < probes->len; it += 1) {
+    RS_Probe *probe = &probes->dat[it];
+
+    // NOTE(cmat): Owning rank contributes phi, everyone else 0 -> the sum is the probe's value on every rank.
+    F64 mine  = (probe->cell >= 0) ? (F64)phi[probe->cell] : 0.0;
+    F64 total = ipc_rank_sum_f64(mine);
+
+    if (lane_index() == 0 && writer->file) {
+      if (probe->claims > 0) {
+        fprintf(writer->file, ",%.6e", total / (F64)probe->claims); // NOTE(cmat): claims > 1 -> average.
       } else {
         fputc(',', writer->file);
       }
     }
+  }
+
+  if (lane_index() == 0 && writer->file) {
     fputc('\n', writer->file);
     fflush(writer->file); // NOTE(cmat): flush every hour so a crashed / stopped run keeps its rows.
   }

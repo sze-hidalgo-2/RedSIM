@@ -528,7 +528,7 @@ function void redsim_group_entry(void *user_data) {
   lane_barrier();
 
   RS_Probe_Writer probe_writer = {0};
-  rs_probes_csv_open(&probe_writer, &probes, "NOX_Probes");
+  rs_probes_csv_open(&probe_writer, &probes, "NOX_Probes.csv");
   lane_barrier();
 
   // NOTE(cmat): Export results.
