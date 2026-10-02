@@ -33,6 +33,14 @@
 #include "rs_meteo.h"
 #include "rs_meteo.c"
 
+#include "rs_probes.h"
+#include "rs_probes.c"
+
+// NOTE(cmat): Probe locations (TAB separated; columns 5,6,7 = x,y,z). Override with -DRS_PROBE_FILE=\"path\".
+#ifndef RS_PROBE_FILE
+#define RS_PROBE_FILE "madrid/probeLocationsFull14"
+#endif
+
 // NOTE(cmat): Build-time switch for how the real station wind speed enters the simulation.
 // -
 // - RS_PSEUDO_TIME_SCALING 1 (pseudo-scaling):
@@ -513,6 +521,16 @@ function void redsim_group_entry(void *user_data) {
 
   fl_solver_scalar_source_set(&scalar_solver, scalar_emission);
 
+  // NOTE(cmat): Probes: load the locations, find the cell (on this rank) holding each one, and open the hourly
+  // - NOx CSV. This includes AQMSCTR3 (199.23658, 160.69592, 3), the traffic station - no separate traffic file needed.
+  RS_Probe_Array probes = rs_probes_load(&permanent_arena, str08_lit(RS_PROBE_FILE));
+  rs_probes_locate(&probes, &mesh, &permanent_arena, &ref_scale, RS_EMISSION_TRACE_STEP_M);
+  lane_barrier();
+
+  RS_Probe_Writer probe_writer = {0};
+  rs_probes_csv_open(&probe_writer, &probes, "NOX_Probes");
+  lane_barrier();
+
   // NOTE(cmat): Export results.
   FLF_Ensight_Export export = { };
   flf_ensight_export_init(&export, str08_lit("karman"), &mesh, &permanent_arena);
@@ -652,6 +670,12 @@ function void redsim_group_entry(void *user_data) {
       fl_solver_euler_compute_residual(&solver, &solver.flow_1, &solver.residual, 1);
       flf_ensight_export_flow(&export, &ref_scale, (F32)time, &solver.flow_1, &solver.gradient, solver.cell_time_step, scalar_solver.phi_1.phi, solver.eddy_viscosity);
 
+      // NOTE(cmat): Hourly NOx at every probe (same phi array that goes to the EnSight export).
+      lane_barrier();
+      rs_probes_csv_write_row(&probe_writer, &probes, scalar_solver.phi_1.phi, hours_done, time,
+          rs_sim_time_from_elapsed(sim_start_year, sim_start_month, sim_start_day, sim_start_hour, time));
+      lane_barrier();
+
 #if RS_LES_SCALAR_DIFFUSIVITY
       {
         F32 eddy_max_nd = fl_solver_scalar_eddy_diffusivity_max(&scalar_solver);
@@ -668,6 +692,8 @@ function void redsim_group_entry(void *user_data) {
 
 
 sim_loop_done:;
+
+  rs_probes_csv_close(&probe_writer);
 
   log_zone_end();
   profiler_end_function();
